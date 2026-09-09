@@ -1,0 +1,58 @@
+# Caddyfile - proxy inverso unico al frente de los 3 microservicios de
+# NovaDrive (pendiente #2 de CLAUDE.md).
+#
+# Problema que resuelve: cada microservicio vive en su propio puerto
+# (8001/8002/8003), asi que para el navegador son 3 origenes HTTP
+# distintos - Basic Auth (common/security.py::require_auth, misma
+# APP_USERNAME/APP_PASSWORD en los 3, ver docker-compose.yml) no se
+# comparte entre origenes, y el navegador la pide 3 veces por separado.
+# Con los 3 detras de UN solo origen (este proxy), el navegador la pide
+# una sola vez y la reusa para los 3 al navegar entre pestañas.
+#
+# Ruteo por prefijo de path, sin reescribirlo (handle, no handle_path):
+# los 3 microservicios ya montan sus propias rutas bajo /customers,
+# /inventory, /orders respectivamente (seccion 8 del PDF) - el proxy
+# solo necesita mandar cada prefijo al contenedor correcto, la app del
+# otro lado espera el path completo tal cual llega.
+#
+# Nombres de servicio (customers/inventory/orders:PUERTO), no
+# localhost/127.0.0.1 - se resuelven por DNS interno de la red de
+# compose, mismo criterio que el resto del stack (ver comentario al
+# inicio de docker-compose.yml).
+#
+# `:80` a secas (sin dominio) = HTTP plano, sin intentar HTTPS
+# automatico - correcto para desarrollo local y para el smoke test de
+# esta sesion. El dia que haya un dominio real apuntando al VPS
+# (pendiente #3, bloqueado hasta tener esos datos), cambiar `:80` por
+# ese dominio (ej. `novadrive.ejemplo.com`) activa HTTPS automatico via
+# ACME sin tocar nada mas de este archivo ni del codigo de negocio -
+# coherente con la decision de diseno #4 ("si en algun despliegue real
+# conviene un gateway, es un cambio de infraestructura, no de codigo").
+:80 {
+	redir / /customers permanent
+
+	handle /customers* {
+		reverse_proxy customers:8001
+	}
+
+	handle /inventory* {
+		reverse_proxy inventory:8002
+	}
+
+	handle /orders* {
+		reverse_proxy orders:8003
+	}
+
+	# GET /events/{event_id}/status vive IDENTICO en los 3 microservicios
+	# (mismo router compartido, common/web/routes_events.py, los 3 leen
+	# la misma tabla nd.outbox_event) - cualquiera de los 3 responde
+	# igual. Se elige "customers" como upstream unico para esta ruta sin
+	# prefijo de entidad propio, sin que importe cual.
+	handle /events/* {
+		reverse_proxy customers:8001
+	}
+
+	handle {
+		respond "Not found - try /customers, /inventory or /orders" 404
+	}
+}

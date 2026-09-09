@@ -83,9 +83,16 @@ services:
       SOURCE_SYSTEM: NOVADRIVE
       APP_USERNAME: ${APP_USERNAME:-admin}
       APP_PASSWORD: ${APP_PASSWORD:-changeme}
-      CUSTOMERS_URL: http://localhost:8001
-      INVENTORY_URL: http://localhost:8002
-      ORDERS_URL: http://localhost:8003
+      # Las 3 apuntan al MISMO origen (el proxy Caddy, ver servicio
+      # "caddy" mas abajo y Caddyfile) - cada template arma el link
+      # final concatenando esta base + su propio prefijo ("/customers",
+      # "/inventory", "/orders"), asi que da igual desde cual de los 3
+      # microservicios se sirvio la pagina: el nav siempre navega
+      # dentro del mismo origen HTTP, que es justo lo que hace que el
+      # navegador pida Basic Auth una sola vez (pendiente #2 resuelto).
+      CUSTOMERS_URL: http://localhost:${PROXY_PORT:-8080}
+      INVENTORY_URL: http://localhost:${PROXY_PORT:-8080}
+      ORDERS_URL: http://localhost:${PROXY_PORT:-8080}
     ports:
       - "${CUSTOMERS_PORT:-8001}:8001"
     mem_limit: 256m
@@ -144,6 +151,23 @@ services:
     # Docker lo reinicia solo - visible en `docker ps` (reinicios) y
     # `docker logs` (el CRITICAL que precede a cada caida), en vez de
     # quedar en un loop de reintentos silencioso para siempre.
+    restart: unless-stopped
+
+  # Reverse proxy unico (pendiente #2 de CLAUDE.md) - ver Caddyfile para
+  # el detalle del ruteo y el porque. Sin esto, el navegador trata
+  # customers/inventory/orders como 3 origenes HTTP distintos (3 puertos
+  # distintos) y pide Basic Auth por separado en cada uno.
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - customers
+      - inventory
+      - orders
+    ports:
+      - "${PROXY_PORT:-8080}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    mem_limit: 128m
     restart: unless-stopped
 
 volumes:
