@@ -42,14 +42,30 @@
               {% endfor %}
             </select>
           </label>
+          <!-- Los 4 campos monetarios/porcentuales de abajo usan
+               type="text" + inputmode="decimal", NO type="number" - ver
+               comentario completo en services/inventory/templates/
+               inventory.html (list_amount): el spin-input nativo del
+               navegador puede renderizar agrupado segun la
+               configuracion regional del SO (no solo el locale de la
+               pagina), produciendo un formato invalido tipo
+               "12.229.00" en maquinas con locale en espanol. Con texto
+               llano, el formato mostrado es siempre el mismo, sin
+               importar la maquina de quien lo mire. -->
           <label>Unit price (USD)
-            <input type="number" name="unit_gross_amount" id="order-unit-amount" min="0" step="0.01" placeholder="defaults to list price">
+            <input type="text" inputmode="decimal" name="unit_gross_amount" id="order-unit-amount"
+                   pattern="[0-9]+(\.[0-9]{1,2})?" placeholder="defaults to list price"
+                   title="Plain number, e.g. 32999.99 - no thousands separator">
           </label>
           <label>Discount %
-            <input type="number" name="discount_pct" min="0" max="100" step="0.01" value="0">
+            <input type="text" inputmode="decimal" name="discount_pct" value="0"
+                   pattern="[0-9]{1,3}(\.[0-9]{1,4})?"
+                   title="Plain number between 0 and 100, e.g. 10.5">
           </label>
           <label>Tax amount (USD)
-            <input type="number" name="tax_amount" min="0" step="0.01" value="0">
+            <input type="text" inputmode="decimal" name="tax_amount" value="0"
+                   pattern="[0-9]+(\.[0-9]{1,2})?"
+                   title="Plain number, e.g. 100.00 - no thousands separator">
           </label>
           <label>Currency
             <input type="text" name="currency_code" value="USD" maxlength="3">
@@ -58,7 +74,9 @@
             <input type="text" name="payment_channel" maxlength="12" placeholder="e.g. CARD">
           </label>
           <label>Amount captured (optional)
-            <input type="number" name="captured_amount" min="0" step="0.01">
+            <input type="text" inputmode="decimal" name="captured_amount"
+                   pattern="[0-9]+(\.[0-9]{1,2})?"
+                   title="Plain number, e.g. 32999.99 - no thousands separator">
           </label>
           <div class="full-width">
             <button type="submit" class="btn btn-primary">Create order</button>

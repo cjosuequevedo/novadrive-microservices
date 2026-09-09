@@ -34,7 +34,23 @@
             <input type="text" name="exterior_colour" maxlength="50">
           </label>
           <label>List price (USD)
-            <input type="number" name="list_amount" required min="0" step="0.01">
+            <!-- type="text" + inputmode="decimal" a proposito, NO
+                 type="number": el spin-input nativo del navegador
+                 renderiza su valor segun la configuracion regional del
+                 SO (no solo el locale de la pagina/JS) - en una maquina
+                 con configuracion regional en espanol, esa capa nativa
+                 puede agrupar miles con "." mientras el valor crudo ya
+                 usa "." como separador decimal, mostrando algo invalido
+                 como "12.229.00". Con texto llano no hay capa de
+                 render locale-dependiente: lo que se guarda es
+                 exactamente lo que se ve, siempre en el mismo formato
+                 (punto decimal, sin separador de miles) sin importar la
+                 maquina de quien lo mire. Sigue mostrando teclado
+                 numerico en movil via inputmode="decimal". Servidor
+                 sigue validando negativos (Pydantic, ver CLAUDE.md). -->
+            <input type="text" inputmode="decimal" name="list_amount" required
+                   pattern="[0-9]+(\.[0-9]{1,2})?"
+                   title="Plain number, e.g. 32999.99 - no thousands separator">
           </label>
           <label>Availability
             <select name="availability_code">
