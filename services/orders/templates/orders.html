@@ -65,6 +65,22 @@
           </div>
         </form>
       </div>
+
+      <div class="card">
+        <h2>Simulate real-time registrations</h2>
+        <p class="muted">Each cycle queries active customers and available inventory units <strong>at that moment</strong> and creates a real order for a random pair.</p>
+        <div class="sim-controls">
+          <label>Quantity
+            <input type="number" id="sim-order-quantity" min="1" max="20" value="5">
+          </label>
+          <label>Interval (sec)
+            <input type="number" id="sim-order-interval" min="2" max="15" value="3">
+          </label>
+          <button id="sim-order-btn" class="btn btn-primary" onclick="startOrderSimulation()">Start simulation</button>
+          <button id="sim-order-stop-btn" class="btn btn-outline" onclick="stopOrderSimulation()" disabled>Stop</button>
+        </div>
+        <ul id="sim-order-log" class="sim-log"></ul>
+      </div>
     </div>
 
     <div class="card col-table">
@@ -240,6 +256,93 @@
         panel.hidden = true;
       }
     });
+  }
+
+  // --- Simulate real-time registrations (Order) ---
+  // On purpose, no reservation system: every cycle re-queries GET
+  // /orders/options (customers ACTIVE and inventory AVAILABLE right now),
+  // picks a random pair and creates the real order. If nothing is
+  // available, the cycle is skipped - this is expected behaviour, not a
+  // bug (same rationale as Andes' Venta simulator).
+  let orderSimActive = false;
+
+  function logOrderSim(text, cls) {
+    const log = document.getElementById('sim-order-log');
+    const li = document.createElement('li');
+    li.className = cls || '';
+    li.innerHTML = text;
+    log.prepend(li);
+  }
+
+  async function createSimulatedOrder(index, total) {
+    logOrderSim(`<span>(${index}/${total}) Querying available customers/units…</span>`, 'pending');
+
+    let options;
+    try {
+      const resp = await fetch('/orders/options');
+      options = await resp.json();
+    } catch (e) {
+      logOrderSim(`<span>(${index}/${total}) Network error querying options: ${e}</span>`, 'error');
+      return;
+    }
+
+    if (!options.units.length || !options.customers.length) {
+      logOrderSim(`<span>(${index}/${total}) No customers or units available right now — cycle skipped.</span>`, 'pending');
+      return;
+    }
+
+    const unit = options.units[Math.floor(Math.random() * options.units.length)];
+    const customer = options.customers[Math.floor(Math.random() * options.customers.length)];
+    const branchAgents = options.agents.filter(a => a.branch_code === unit.branch_code);
+    if (!branchAgents.length) {
+      logOrderSim(`<span>(${index}/${total}) No active agent at the unit's branch — cycle skipped.</span>`, 'pending');
+      return;
+    }
+    const agent = branchAgents[Math.floor(Math.random() * branchAgents.length)];
+
+    const fd = new FormData();
+    fd.append('buyer_code', customer.customer_code);
+    fd.append('sales_agent_code', agent.agent_code);
+    fd.append('fulfillment_branch', unit.branch_code);
+    fd.append('chassis_number', unit.chassis_number);
+
+    try {
+      const resp = await fetch('/orders', { method: 'POST', body: fd });
+      const body = await resp.json();
+      if (!resp.ok) {
+        logOrderSim(`<span>(${index}/${total}) Error: ${body.detail ? formatErrorDetail(body.detail) : resp.status}</span>`, 'error');
+        return;
+      }
+      const eventId = body.events[0].event_id;
+      logOrderSim(
+        `<span>(${index}/${total}) Order ${body.data.order_number} — ${customer.full_name} → ${unit.brand_name} ${unit.model_name}</span> ${statusLink(eventId)}`,
+        ''
+      );
+      addOrderToTable(body);
+    } catch (e) {
+      logOrderSim(`<span>(${index}/${total}) Network error: ${e}</span>`, 'error');
+    }
+  }
+
+  async function startOrderSimulation() {
+    const quantity = Math.min(20, Math.max(1, parseInt(document.getElementById('sim-order-quantity').value, 10) || 5));
+    const intervalSec = Math.min(15, Math.max(2, parseInt(document.getElementById('sim-order-interval').value, 10) || 3));
+    orderSimActive = true;
+    document.getElementById('sim-order-btn').disabled = true;
+    document.getElementById('sim-order-stop-btn').disabled = false;
+
+    for (let i = 1; i <= quantity && orderSimActive; i++) {
+      await createSimulatedOrder(i, quantity);
+      if (i < quantity && orderSimActive) await new Promise(r => setTimeout(r, intervalSec * 1000));
+    }
+
+    orderSimActive = false;
+    document.getElementById('sim-order-btn').disabled = false;
+    document.getElementById('sim-order-stop-btn').disabled = true;
+  }
+
+  function stopOrderSimulation() {
+    orderSimActive = false;
   }
 </script>
 {% endblock %}

@@ -41,6 +41,22 @@
           </div>
         </form>
       </div>
+
+      <div class="card">
+        <h2>Simulate real-time registrations</h2>
+        <p class="muted">Creates real customers, spaced over time, using the same <code>POST /customers</code> as the form — nothing is simulated outside the real flow.</p>
+        <div class="sim-controls">
+          <label>Quantity
+            <input type="number" id="sim-cust-quantity" min="1" max="20" value="5">
+          </label>
+          <label>Interval (sec)
+            <input type="number" id="sim-cust-interval" min="1" max="10" value="2">
+          </label>
+          <button id="sim-cust-btn" class="btn btn-primary" onclick="startCustomerSimulation()">Start simulation</button>
+          <button id="sim-cust-stop-btn" class="btn btn-outline" onclick="stopCustomerSimulation()" disabled>Stop</button>
+        </div>
+        <ul id="sim-cust-log" class="sim-log"></ul>
+      </div>
     </div>
 
     <div class="card col-table">
@@ -176,6 +192,73 @@
     } else if (result) {
       form.reset();
     }
+  }
+
+  // --- Simulate real-time registrations (Customer) ---
+  // Same simple scope as Andes: creates real customers, spaced in time,
+  // via the same real POST /customers used by the form above.
+  const SIM_FIRST_NAMES = ['Jamie', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Jordan', 'Avery', 'Peyton', 'Reese', 'Cameron', 'Skylar', 'Rowan'];
+  const SIM_LAST_NAMES = ['Chen', 'Reyes', 'Patel', 'Novak', 'Brooks', 'Silva', 'Nguyen', 'Okafor', 'Larsen', 'Duarte'];
+  let custSimActive = false;
+
+  function pickCustSim(list) { return list[Math.floor(Math.random() * list.length)]; }
+  function waitCustSim(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  function logCustSim(text, cls) {
+    const log = document.getElementById('sim-cust-log');
+    const li = document.createElement('li');
+    li.className = cls || '';
+    li.innerHTML = text;
+    log.prepend(li);
+  }
+
+  async function createSimulatedCustomer(index, total) {
+    const firstName = pickCustSim(SIM_FIRST_NAMES);
+    const lastName = pickCustSim(SIM_LAST_NAMES);
+    const fullName = `${firstName} ${lastName}`;
+    const documentNumber = 'SIM' + Date.now().toString().slice(-8) + Math.floor(Math.random() * 90 + 10);
+
+    logCustSim(`<span>(${index}/${total}) Creating ${fullName}…</span>`, 'pending');
+
+    const fd = new FormData();
+    fd.append('document_number', documentNumber);
+    fd.append('full_name', fullName);
+    fd.append('email_address', `${firstName}.${lastName}@example.test`.toLowerCase());
+
+    try {
+      const resp = await fetch('/customers', { method: 'POST', body: fd });
+      const body = await resp.json();
+      if (!resp.ok) {
+        logCustSim(`<span>(${index}/${total}) Error: ${body.detail ? formatErrorDetail(body.detail) : resp.status}</span>`, 'error');
+        return;
+      }
+      const eventId = body.events[0].event_id;
+      logCustSim(`<span>(${index}/${total}) Customer ${body.data.customer_code} — ${fullName}</span> ${statusLink(eventId)}`, '');
+      addCustomerToTable(body);
+    } catch (e) {
+      logCustSim(`<span>(${index}/${total}) Network error: ${e}</span>`, 'error');
+    }
+  }
+
+  async function startCustomerSimulation() {
+    const quantity = Math.min(20, Math.max(1, parseInt(document.getElementById('sim-cust-quantity').value, 10) || 5));
+    const intervalSec = Math.min(10, Math.max(1, parseInt(document.getElementById('sim-cust-interval').value, 10) || 2));
+    custSimActive = true;
+    document.getElementById('sim-cust-btn').disabled = true;
+    document.getElementById('sim-cust-stop-btn').disabled = false;
+
+    for (let i = 1; i <= quantity && custSimActive; i++) {
+      await createSimulatedCustomer(i, quantity);
+      if (i < quantity && custSimActive) await waitCustSim(intervalSec * 1000);
+    }
+
+    custSimActive = false;
+    document.getElementById('sim-cust-btn').disabled = false;
+    document.getElementById('sim-cust-stop-btn').disabled = true;
+  }
+
+  function stopCustomerSimulation() {
+    custSimActive = false;
   }
 </script>
 {% endblock %}

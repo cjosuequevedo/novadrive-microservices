@@ -49,6 +49,22 @@
           </div>
         </form>
       </div>
+
+      <div class="card">
+        <h2>Simulate real-time registrations</h2>
+        <p class="muted">Creates real inventory units, spaced over time, using the same <code>POST /inventory</code> as the form — nothing is simulated outside the real flow.</p>
+        <div class="sim-controls">
+          <label>Quantity
+            <input type="number" id="sim-inv-quantity" min="1" max="20" value="5">
+          </label>
+          <label>Interval (sec)
+            <input type="number" id="sim-inv-interval" min="1" max="10" value="2">
+          </label>
+          <button id="sim-inv-btn" class="btn btn-primary" onclick="startInventorySimulation()">Start simulation</button>
+          <button id="sim-inv-stop-btn" class="btn btn-outline" onclick="stopInventorySimulation()" disabled>Stop</button>
+        </div>
+        <ul id="sim-inv-log" class="sim-log"></ul>
+      </div>
     </div>
 
     <div class="card col-table">
@@ -199,6 +215,102 @@
     } else if (result) {
       form.reset();
     }
+  }
+
+  // --- Simulate real-time registrations (Inventory) ---
+  // Branch options come from the form's own dropdown (already populated by
+  // a real query at page load) - Branch is reference data, not something
+  // that depletes in real time, so no extra live endpoint is needed here
+  // (unlike Order, which does need a live re-query - see orders.html).
+  const SIM_MAKE_MODEL = [
+    ['Toyota', 'Corolla'], ['Toyota', 'RAV4'], ['Honda', 'Civic'], ['Honda', 'CR-V'],
+    ['Ford', 'Escape'], ['Ford', 'F-150'], ['Chevrolet', 'Equinox'], ['Kia', 'Sportage'],
+    ['Hyundai', 'Tucson'], ['Mazda', 'CX-5'], ['Nissan', 'Rogue'], ['Volkswagen', 'Jetta'],
+  ];
+  const SIM_COLOURS = ['White', 'Black', 'Grey', 'Silver', 'Red', 'Blue'];
+  let invSimActive = false;
+
+  function waitInvSim(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  function generateRandomVin() {
+    // Excludes I, O, Q - same charset the form itself validates (see
+    // services/inventory/schemas.py, closed from day one, not left as a
+    // gap the way Andes did with its own VIN validation).
+    const alphabet = 'ABCDEFGHJKLMNPRSTUVWXYZ0123456789';
+    let vin = '';
+    for (let i = 0; i < 17; i++) vin += alphabet[Math.floor(Math.random() * alphabet.length)];
+    return vin;
+  }
+
+  function logInvSim(text, cls) {
+    const log = document.getElementById('sim-inv-log');
+    const li = document.createElement('li');
+    li.className = cls || '';
+    li.innerHTML = text;
+    log.prepend(li);
+  }
+
+  async function createSimulatedUnit(index, total) {
+    const [brand, model] = SIM_MAKE_MODEL[Math.floor(Math.random() * SIM_MAKE_MODEL.length)];
+    const colour = SIM_COLOURS[Math.floor(Math.random() * SIM_COLOURS.length)];
+    const year = 2018 + Math.floor(Math.random() * 8);
+    const amount = (18000 + Math.floor(Math.random() * 30000)).toFixed(2);
+    const vin = generateRandomVin();
+    const branchOptions = document.querySelectorAll('#inventory-form select[name=branch_code] option:not([value=""])');
+    const branchCode = branchOptions.length
+      ? branchOptions[Math.floor(Math.random() * branchOptions.length)].value
+      : '';
+
+    logInvSim(`<span>(${index}/${total}) Creating ${brand} ${model} ${year}…</span>`, 'pending');
+
+    if (!branchCode) {
+      logInvSim(`<span>(${index}/${total}) No branch available — cycle skipped.</span>`, 'pending');
+      return;
+    }
+
+    const fd = new FormData();
+    fd.append('branch_code', branchCode);
+    fd.append('chassis_number', vin);
+    fd.append('brand_name', brand);
+    fd.append('model_name', model);
+    fd.append('model_year', String(year));
+    fd.append('exterior_colour', colour);
+    fd.append('list_amount', amount);
+
+    try {
+      const resp = await fetch('/inventory', { method: 'POST', body: fd });
+      const body = await resp.json();
+      if (!resp.ok) {
+        logInvSim(`<span>(${index}/${total}) Error: ${body.detail ? formatErrorDetail(body.detail) : resp.status}</span>`, 'error');
+        return;
+      }
+      const eventId = body.events[0].event_id;
+      logInvSim(`<span>(${index}/${total}) Unit ${body.data.chassis_number} — ${brand} ${model}</span> ${statusLink(eventId)}`, '');
+      addUnitToTable(body);
+    } catch (e) {
+      logInvSim(`<span>(${index}/${total}) Network error: ${e}</span>`, 'error');
+    }
+  }
+
+  async function startInventorySimulation() {
+    const quantity = Math.min(20, Math.max(1, parseInt(document.getElementById('sim-inv-quantity').value, 10) || 5));
+    const intervalSec = Math.min(10, Math.max(1, parseInt(document.getElementById('sim-inv-interval').value, 10) || 2));
+    invSimActive = true;
+    document.getElementById('sim-inv-btn').disabled = true;
+    document.getElementById('sim-inv-stop-btn').disabled = false;
+
+    for (let i = 1; i <= quantity && invSimActive; i++) {
+      await createSimulatedUnit(i, quantity);
+      if (i < quantity && invSimActive) await waitInvSim(intervalSec * 1000);
+    }
+
+    invSimActive = false;
+    document.getElementById('sim-inv-btn').disabled = false;
+    document.getElementById('sim-inv-stop-btn').disabled = true;
+  }
+
+  function stopInventorySimulation() {
+    invSimActive = false;
   }
 </script>
 {% endblock %}

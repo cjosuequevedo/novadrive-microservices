@@ -103,6 +103,28 @@ def orders_page(request: Request, session: Session = Depends(get_session)):
     )
 
 
+@router.get("/orders/options")
+def order_options(session: Session = Depends(get_session)) -> dict:
+    """Solo lectura, en vivo (no cacheado) - usado por el simulador de
+    Order para elegir un par customer+inventory+agent real EN ESE
+    MOMENTO, no con una lista tomada al cargar la pagina (mismo criterio
+    que /ventas/opciones en Andes)."""
+    return {
+        "customers": [
+            CustomerOption.model_validate(c).model_dump(mode="json")
+            for c in repository.list_active_customers(session)
+        ],
+        "units": [
+            InventoryOption.model_validate(u).model_dump(mode="json")
+            for u in repository.list_available_inventory(session)
+        ],
+        "agents": [
+            AgentOption.model_validate(a).model_dump(mode="json")
+            for a in repository.list_active_agents(session)
+        ],
+    }
+
+
 @router.post("/orders")
 def create_order(
     buyer_code: str = Form(...),
