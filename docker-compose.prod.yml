@@ -1,0 +1,202 @@
+# docker-compose.prod.yml - despliegue de produccion (VPS DigitalOcean,
+# pendiente #3 de CLAUDE.md). Archivo separado de docker-compose.yml a
+# proposito (misma decision que tomo Andes con el suyo): ese otro
+# archivo es el de desarrollo local/checkpoints - publica postgres
+# (15432), redpanda (29092/29644) y los 3 microservicios (8001/8002/
+# 8003) directo al host porque las pruebas de esta sesion (Playwright,
+# scripts checkpoint_*.py, psql, rpk) necesitan pegarle directo desde
+# la maquina de desarrollo. En produccion eso es exactamente lo que NO
+# queremos (pedido explicito, 9 sep 2026): solo 22 (SSH) y 80/443
+# (Caddy) publicos: nada de Postgres/Redpanda/microservicios en sus
+# puertos directos, "ni siquiera para debugging remoto".
+#
+# Como se logra (dos capas, no solo una):
+#   1. Ninguno de postgres/redpanda/customers/inventory/orders declara
+#      "ports:" aca - sin eso, Docker no abre NADA en la interfaz
+#      publica del host para esos servicios, sin importar que diga el
+#      firewall. Solo se hablan entre si por nombre de servicio dentro
+#      de la red interna de compose (mismo criterio que ya documenta
+#      docker-compose.yml).
+#   2. ufw en el VPS ademas bloquea explicitamente esos puertos a nivel
+#      de SO (ver notas de la sesion de despliegue) - defensa en
+#      profundidad, no una u otra.
+# La UNICA superficie publica de esta pila es "caddy" (80/443).
+#
+# Redpanda con UN solo listener (a diferencia de docker-compose.yml,
+# que necesita el listener EXTERNAL para herramientas del host) -
+# nada fuera de la red de compose necesita hablarle nunca en
+# produccion, mismo criterio que ya usa Andes en su propio
+# docker-compose.yml de produccion.
+#
+# Memoria: mismo VPS real (~3.8GB, confirmado con `free -h`, no los
+# "4GB" nominales - mismo hallazgo que Andes documento para el suyo) y
+# mismo cero margen para que un contenedor se desboque. redpanda baja
+# de 1200m/1G (valor de desarrollo, generoso a proposito) a 512m/512M -
+# Andes ya verifico en su propio Redpanda real que nunca supera ~106MB,
+# asi que hay margen de sobra incluso mas ajustado. Swap de 2GB agregado
+# al VPS como red de seguridad adicional (mismo criterio que Andes),
+# fuera de este archivo (a nivel de SO, ver notas de despliegue).
+#
+# Variables reales en el .env del VPS (NO commiteado, mismo patron que
+# Andes) - producidas para este despliegue, NUNCA reusando las de
+# desarrollo local (POSTGRES_PASSWORD/APP_USERNAME/APP_PASSWORD nuevos).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # Sin "ports:" - ver nota de cabecera. Solo el volumen para
+    # persistencia real de datos de negocio.
+    volumes:
+      - novadrive_postgres_data:/var/lib/postgresql/data
+      - ./db/ddl_postgres.sql:/docker-entrypoint-initdb.d/01_ddl_postgres.sql:ro
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "512M"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    # Sin "ports:" - listener unico, solo para la red interna de
+    # compose (ver nota de cabecera). CON volumen (a diferencia de
+    # docker-compose.yml de desarrollo, que es efimero a proposito):
+    # en produccion perder este directorio en cada redeploy tiraria
+    # eventos ya buffereados/no publicados - Andes ya persiste el suyo
+    # (`redpanda-data`) en su propio compose de produccion, mismo
+    # criterio aca.
+    volumes:
+      - novadrive_redpanda_data:/var/lib/redpanda/data
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  customers:
+    build: .
+    command: ["customers"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: &app_env
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_SCHEMA: nd
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      SOURCE_SYSTEM: NOVADRIVE
+      APP_USERNAME: ${APP_USERNAME}
+      APP_PASSWORD: ${APP_PASSWORD}
+      # Las 3 apuntan al MISMO origen publico (Caddy, unica superficie
+      # expuesta) - ver PUBLIC_BASE_URL en el .env del VPS. Sin esto,
+      # el nav de cada pagina armaria links con puertos internos que ni
+      # siquiera estan publicados (8001/8002/8003), rotos desde afuera.
+      CUSTOMERS_URL: ${PUBLIC_BASE_URL}
+      INVENTORY_URL: ${PUBLIC_BASE_URL}
+      ORDERS_URL: ${PUBLIC_BASE_URL}
+    # Sin "ports:" - ver nota de cabecera. Solo Caddy le habla, por
+    # nombre de servicio.
+    restart: unless-stopped
+    mem_limit: 256m
+
+  inventory:
+    build: .
+    command: ["inventory"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: *app_env
+    restart: unless-stopped
+    mem_limit: 256m
+
+  orders:
+    build: .
+    command: ["orders"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: *app_env
+    restart: unless-stopped
+    mem_limit: 256m
+
+  worker:
+    build: .
+    command: ["worker"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: *app_env
+    restart: unless-stopped
+    mem_limit: 256m
+    # Una sola replica en el MVP (seccion 2/13 del PDF) - no usar
+    # `deploy.replicas` > 1 aca.
+
+  bridge:
+    build: .
+    command: ["bridge"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment:
+      <<: *app_env
+      DATABRICKS_HOST: ${DATABRICKS_HOST}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN}
+      # Sin default hardcodeado (hallazgo real, ver CLAUDE.md) - debe
+      # venir del .env del VPS o la app falla rapido y visible.
+      DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID}
+    restart: unless-stopped
+    mem_limit: 256m
+
+  # Unica superficie publica de esta pila - ver nota de cabecera y
+  # Caddyfile. Puerto 443 publicado ya de una para cuando haya un
+  # dominio real apuntando aca (activa HTTPS automatico solo cambiando
+  # ":80" por el dominio en Caddyfile, sin tocar este archivo).
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - customers
+      - inventory
+      - orders
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    restart: unless-stopped
+
+volumes:
+  novadrive_postgres_data:
+  novadrive_redpanda_data:
+  caddy_data:
+  caddy_config:
