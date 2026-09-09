@@ -20,10 +20,14 @@ load_dotenv_if_missing()
 
 HOST = os.environ["DATABRICKS_HOST"].rstrip("/")
 TOKEN = os.environ["DATABRICKS_TOKEN"]
-# Mismo warehouse que usa Andes (ver su CLAUDE.md, "Infraestructura y
-# ubicaciones") - un SQL Warehouse por workspace alcanza para ambos
-# proyectos, no hace falta uno propio por catalogo.
-WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "548c86efc1164b8d")
+# Requerido, SIN default hardcodeado - hallazgo real (9 sep 2026): antes
+# caia en silencio al warehouse de Andes (548c86efc1164b8d) si esta
+# variable no estaba seteada, lo cual funcionaba "por casualidad" solo
+# porque hoy comparten workspace (ver CLAUDE.md, decision #7). Si el dia
+# de manana NovaDrive apunta a un workspace nuevo y alguien olvida
+# setear esta variable, mejor que falle rapido (KeyError explicito) a
+# que consulte silenciosamente el warehouse equivocado.
+WAREHOUSE_ID = os.environ["DATABRICKS_WAREHOUSE_ID"]
 
 
 def _call(method: str, path: str, body: dict | None = None) -> dict:

@@ -50,6 +50,22 @@ TOPICS = ["cdc.novadrive.customer", "cdc.novadrive.vehicle", "cdc.novadrive.sale
 # solo funcione "por casualidad" porque el bridge corre fuera de Docker.
 BOOTSTRAP_SERVERS_DEFAULT = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:29092")
 
+# Hallazgo real (9 sep 2026): loop_continuous() atrapaba CUALQUIER fallo
+# de upload_batch() en un except Exception silencioso, para siempre - el
+# buffer nunca se vaciaba pero tampoco dejaba de crecer, y el fallo solo
+# era visible si alguien miraba docker logs a proposito. Dos umbrales
+# configurables por entorno para no repetir esto:
+#   - MAX_CONSECUTIVE_FAILURES: tras esta cantidad de flushes fallidos
+#     seguidos, el proceso deja de reintentar en silencio y termina con
+#     un log CRITICAL bien visible - ver restart:unless-stopped en
+#     docker-compose.yml, que lo reinicia solo (igual que Andes).
+#   - MAX_BUFFER_SIZE: tope de mensajes en memoria mientras el flush
+#     viene fallando. Al llegar al tope, el bridge deja de hacer poll()
+#     (backpressure) en vez de seguir acumulando sin limite - los
+#     mensajes no leidos quedan intactos en Redpanda, no se pierden.
+MAX_CONSECUTIVE_FAILURES = int(os.environ.get("BRIDGE_MAX_CONSECUTIVE_FAILURES", "8"))
+MAX_BUFFER_SIZE = int(os.environ.get("BRIDGE_MAX_BUFFER_SIZE", "2000"))
+
 
 def _sql_str(value: str) -> str:
     """Escapa un literal STRING para Spark SQL (ANSI: comilla simple
@@ -148,27 +164,58 @@ def loop_continuous(
     flush_interval_sec: float = 5.0,
     max_batch_size: int = 200,
 ) -> None:
-    """Proceso persistente: nunca termina. Mismo espiritu que
-    worker/outbox_worker.py::loop() - poll, acumular, subir cuando
-    corresponda por tiempo o tamano, repetir. Este es el "consumidor
-    continuo" que exige la seccion 4 del PDF (nunca un Job de
-    Databricks por evento)."""
+    """Proceso persistente: nunca termina en operacion normal. Mismo
+    espiritu que worker/outbox_worker.py::loop() - poll, acumular, subir
+    cuando corresponda por tiempo o tamano, repetir. Este es el
+    "consumidor continuo" que exige la seccion 4 del PDF (nunca un Job
+    de Databricks por evento).
+
+    Manejo de fallos (ver MAX_CONSECUTIVE_FAILURES/MAX_BUFFER_SIZE mas
+    arriba): un flush fallido no se reintenta en silencio para siempre -
+    tras el umbral, el proceso termina con un log CRITICAL para que
+    restart:unless-stopped lo reinicie (visible en docker ps/docker
+    logs, igual que el bridge de Andes). El buffer tiene tope (backpressure,
+    no crece sin limite).
+
+    `enable.auto.commit` en False, a proposito - hallazgo encontrado al
+    implementar el punto anterior: con auto-commit en True, Kafka podia
+    dar por consumidos mensajes que todavia estaban solo en el buffer en
+    memoria, sin haber llegado a Bronze; si el proceso terminaba (antes,
+    por una excepcion no atrapada; ahora, a proposito tras el umbral de
+    reintentos) esos mensajes se perdian para siempre en el proximo
+    arranque en vez de reintentarse - contradice el contrato at-least-once
+    de CLAUDE.md. Ahora el commit de offsets ocurre recien despues de un
+    flush exitoso: en el peor caso, un reinicio reprocesa el mismo lote
+    (duplicados en Bronze, esperados y aceptados por el contrato), nunca
+    lo pierde."""
     consumer = Consumer(
         {
             "bootstrap.servers": bootstrap_servers,
             "group.id": "novadrive-bridge-databricks",
             "auto.offset.reset": "earliest",
-            "enable.auto.commit": True,
+            "enable.auto.commit": False,
         }
     )
     consumer.subscribe(TOPICS)
-    logger.info("NovaDrive bridge started (continuous loop). topics=%s -> %s", TOPICS, BRONZE_TABLE)
+    logger.info(
+        "NovaDrive bridge started (continuous loop). topics=%s -> %s max_consecutive_failures=%s max_buffer_size=%s",
+        TOPICS, BRONZE_TABLE, MAX_CONSECUTIVE_FAILURES, MAX_BUFFER_SIZE,
+    )
 
     buffer: list[dict] = []
     last_flush = time.time()
+    consecutive_failures = 0
     try:
         while True:
-            msg = consumer.poll(timeout=1.0)
+            # Backpressure: si el buffer esta al tope (el flush viene
+            # fallando), dejamos de leer de Redpanda - los mensajes no
+            # leidos quedan intactos en el broker, no se pierden.
+            if len(buffer) < MAX_BUFFER_SIZE:
+                msg = consumer.poll(timeout=1.0)
+            else:
+                msg = None
+                time.sleep(1.0)
+
             if msg is not None:
                 if msg.error():
                     logger.warning("consume error: %s", msg.error())
@@ -184,17 +231,38 @@ def loop_continuous(
                         }
                     )
 
-            should_flush = buffer and (len(buffer) >= max_batch_size or time.time() - last_flush >= flush_interval_sec)
+            should_flush = buffer and (
+                len(buffer) >= max_batch_size
+                or time.time() - last_flush >= flush_interval_sec
+                or len(buffer) >= MAX_BUFFER_SIZE
+            )
             if should_flush:
                 try:
                     n = upload_batch(buffer)
                     logger.info("Flushed %s events to %s", n, BRONZE_TABLE)
-                except Exception:
-                    logger.exception("Failed to flush batch to Bronze - keeping buffer for retry")
+                except Exception as exc:
+                    consecutive_failures += 1
+                    logger.exception(
+                        "Failed to flush batch to Bronze (%s/%s consecutive failures) - keeping %s buffered events for retry",
+                        consecutive_failures, MAX_CONSECUTIVE_FAILURES, len(buffer),
+                    )
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        logger.critical(
+                            "CRITICAL: bridge failed to flush to Bronze %s times in a row (last error: %s) - "
+                            "giving up so the container exits and restart:unless-stopped brings it back. "
+                            "%s events remain unflushed; nothing is lost, offsets are only committed after a "
+                            "successful flush, so they will be re-read from Redpanda after restart.",
+                            consecutive_failures, exc, len(buffer),
+                        )
+                        raise
                     time.sleep(2.0)
                     continue
+                # Flush exitoso: recien ahora commiteamos los offsets de
+                # lo que efectivamente llego a Bronze (ver docstring).
+                consumer.commit(asynchronous=False)
                 buffer = []
                 last_flush = time.time()
+                consecutive_failures = 0
     finally:
         consumer.close()
 

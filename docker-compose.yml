@@ -133,8 +133,18 @@ services:
       <<: *app_env
       DATABRICKS_HOST: ${DATABRICKS_HOST}
       DATABRICKS_TOKEN: ${DATABRICKS_TOKEN}
-      DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID:-548c86efc1164b8d}
+      # Sin fallback hardcodeado (antes caia al warehouse de Andes,
+      # 548c86efc1164b8d, si esta variable faltaba en .env - hallazgo
+      # real, ver CLAUDE.md). Debe venir de .env; si falta, la app falla
+      # rapido y visible en vez de consultar el workspace equivocado.
+      DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID}
     mem_limit: 256m
+    # Igual que Andes: si el bridge se rinde a proposito tras
+    # MAX_CONSECUTIVE_FAILURES (ver bridge_redpanda_to_databricks.py),
+    # Docker lo reinicia solo - visible en `docker ps` (reinicios) y
+    # `docker logs` (el CRITICAL que precede a cada caida), en vez de
+    # quedar en un loop de reintentos silencioso para siempre.
+    restart: unless-stopped
 
 volumes:
   novadrive_postgres_data:
