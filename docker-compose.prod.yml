@@ -89,7 +89,16 @@ services:
     # criterio aca.
     volumes:
       - novadrive_redpanda_data:/var/lib/redpanda/data
-    mem_limit: 512m
+    # mem_limit DEBE quedar por encima del "--memory 512M" de arriba,
+    # nunca igual - hallazgo real en el primer intento de despliegue
+    # (9 sep 2026): con mem_limit=512m a secas, Redpanda fallo al
+    # arrancar con "insufficient physical memory: needed 536870912
+    # available 500000000" - el resto del contenedor (rpk, el propio
+    # healthcheck) ya consume algo de ese cgroup, sin dejarle a Redpanda
+    # los 512MB completos que pide. 640m deja ~128MB de margen, mismo
+    # colchon proporcional que ya usaba docker-compose.yml de
+    # desarrollo (1200m de limite para 1G de --memory).
+    mem_limit: 640m
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
