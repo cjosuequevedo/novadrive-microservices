@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Inventory - NovaDrive{% endblock %}
+{% block content %}
+  <h1>Inventory</h1>
+  <p class="subtitle">Create, edit and delete inventory units. Every action generates a real outbox event.</p>
+
+  <div class="two-col">
+    <div class="col-form">
+      <div class="card">
+        <h2 id="inventory-form-title">New inventory unit</h2>
+        <form id="inventory-form" class="form-grid" method="post" action="/inventory"
+              onsubmit="event.preventDefault(); submitInventoryForm(this);">
+          <label>Branch
+            <select name="branch_code" required>
+              <option value="" disabled selected>Select a branch…</option>
+              {% for b in branches %}
+              <option value="{{ b.branch_code }}">{{ b.display_name }} ({{ b.branch_code }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Chassis number (VIN)
+            <input type="text" name="chassis_number" id="inventory-chassis-input" required minlength="17" maxlength="17" style="text-transform:uppercase">
+          </label>
+          <label>Brand
+            <input type="text" name="brand_name" required maxlength="60">
+          </label>
+          <label>Model
+            <input type="text" name="model_name" required maxlength="100">
+          </label>
+          <label>Model year
+            <input type="number" name="model_year" required min="1900" max="2100" value="2025">
+          </label>
+          <label>Exterior colour
+            <input type="text" name="exterior_colour" maxlength="50">
+          </label>
+          <label>List price (USD)
+            <input type="number" name="list_amount" required min="0" step="0.01">
+          </label>
+          <label>Availability
+            <select name="availability_code">
+              <option value="AVL">Available</option>
+              <option value="HOLD">Held</option>
+              <option value="SOLD">Sold</option>
+            </select>
+          </label>
+          <div class="full-width" style="display:flex; gap:0.5rem;">
+            <button type="submit" class="btn btn-primary" id="inventory-form-submit">Create unit</button>
+            <button type="button" class="btn btn-outline" id="inventory-form-cancel" onclick="cancelInventoryEdit()" hidden>Cancel edit</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card col-table">
+      <h2>Inventory units</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Chassis</th><th>Branch</th><th>Brand / model</th><th>Year</th><th>Price</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="inventory-table">
+            {% for u in units %}
+            <tr id="unit-{{ u.chassis_number }}"
+                data-branch-code="{{ u.branch_code }}" data-brand-name="{{ u.brand_name }}"
+                data-model-name="{{ u.model_name }}" data-model-year="{{ u.model_year }}"
+                data-exterior-colour="{{ u.exterior_colour or '' }}" data-list-amount="{{ u.list_amount }}"
+                data-availability-code="{{ u.availability_code }}">
+              <td>{{ u.chassis_number }}</td>
+              <td>{{ u.branch_code }}</td>
+              <td>{{ u.brand_name }} {{ u.model_name }}</td>
+              <td>{{ u.model_year }}</td>
+              <td>${{ '%.2f'|format(u.list_amount) }}</td>
+              <td><span class="badge">{{ u.availability_code }}</span></td>
+              <td>
+                <button type="button" class="btn btn-outline btn-sm" onclick="loadUnitForEdit(document.getElementById('unit-{{ u.chassis_number }}'))">Edit</button>
+                <form method="post" action="/inventory/{{ u.chassis_number }}/delete" style="display:inline"
+                      onsubmit="event.preventDefault(); novadriveSubmit(this, () => { this.closest('tr').remove(); inventoryPaginator.render(); });">
+                  <button type="submit" class="btn btn-outline btn-sm">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div id="inventory-pagination" class="pagination"></div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block page_script %}
+<script>
+  const inventoryPaginator = createPaginator('inventory-table', 'inventory-pagination', 12);
+
+  function unitRowHTML(u) {
+    return `
+      <td>${u.chassis_number}</td>
+      <td>${u.branch_code}</td>
+      <td>${u.brand_name} ${u.model_name}</td>
+      <td>${u.model_year}</td>
+      <td>$${Number(u.list_amount).toFixed(2)}</td>
+      <td><span class="badge">${u.availability_code}</span></td>
+      <td>
+        <button type="button" class="btn btn-outline btn-sm" onclick="loadUnitForEdit(document.getElementById('unit-${u.chassis_number}'))">Edit</button>
+        <form method="post" action="/inventory/${u.chassis_number}/delete" style="display:inline"
+              onsubmit="event.preventDefault(); novadriveSubmit(this, () => { this.closest('tr').remove(); inventoryPaginator.render(); });">
+          <button type="submit" class="btn btn-outline btn-sm">Delete</button>
+        </form>
+      </td>`;
+  }
+
+  function addUnitToTable(response) {
+    if (!response || !response.data) return;
+    const u = response.data;
+    const tbody = document.getElementById('inventory-table');
+    const row = document.createElement('tr');
+    row.id = `unit-${u.chassis_number}`;
+    row.className = 'row-new';
+    row.dataset.branchCode = u.branch_code;
+    row.dataset.brandName = u.brand_name;
+    row.dataset.modelName = u.model_name;
+    row.dataset.modelYear = u.model_year;
+    row.dataset.exteriorColour = u.exterior_colour || '';
+    row.dataset.listAmount = u.list_amount;
+    row.dataset.availabilityCode = u.availability_code;
+    row.innerHTML = unitRowHTML(u);
+    tbody.prepend(row);
+    inventoryPaginator.goToStart();
+  }
+
+  function updateExistingUnitRow(chassis, u) {
+    const row = document.getElementById(`unit-${chassis}`);
+    if (!row || !u) return;
+    row.dataset.branchCode = u.branch_code;
+    row.dataset.brandName = u.brand_name;
+    row.dataset.modelName = u.model_name;
+    row.dataset.modelYear = u.model_year;
+    row.dataset.exteriorColour = u.exterior_colour || '';
+    row.dataset.listAmount = u.list_amount;
+    row.dataset.availabilityCode = u.availability_code;
+    row.className = 'row-new';
+    row.innerHTML = unitRowHTML(u);
+  }
+
+  // --- Edit with prefill ---
+  function loadUnitForEdit(row) {
+    const form = document.getElementById('inventory-form');
+    const chassis = row.id.replace('unit-', '');
+    form.action = `/inventory/${chassis}/edit`;
+    form.dataset.mode = 'edit';
+    form.dataset.editingChassis = chassis;
+    form.querySelector('[name=branch_code]').value = row.dataset.branchCode;
+    const chassisInput = document.getElementById('inventory-chassis-input');
+    chassisInput.value = chassis;
+    chassisInput.disabled = true; // chassis IS the primary key - not editable
+    form.querySelector('[name=brand_name]').value = row.dataset.brandName;
+    form.querySelector('[name=model_name]').value = row.dataset.modelName;
+    form.querySelector('[name=model_year]').value = row.dataset.modelYear;
+    form.querySelector('[name=exterior_colour]').value = row.dataset.exteriorColour;
+    form.querySelector('[name=list_amount]').value = row.dataset.listAmount;
+    form.querySelector('[name=availability_code]').value = row.dataset.availabilityCode;
+    document.getElementById('inventory-form-title').textContent = `Edit unit ${chassis}`;
+    document.getElementById('inventory-form-submit').textContent = 'Save changes';
+    document.getElementById('inventory-form-cancel').hidden = false;
+    form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function cancelInventoryEdit() {
+    const form = document.getElementById('inventory-form');
+    form.action = '/inventory';
+    delete form.dataset.mode;
+    delete form.dataset.editingChassis;
+    form.reset();
+    document.getElementById('inventory-chassis-input').disabled = false;
+    document.getElementById('inventory-form-title').textContent = 'New inventory unit';
+    document.getElementById('inventory-form-submit').textContent = 'Create unit';
+    document.getElementById('inventory-form-cancel').hidden = true;
+  }
+
+  async function submitInventoryForm(form) {
+    const editing = form.dataset.mode === 'edit';
+    const editedChassis = form.dataset.editingChassis;
+    // Disabled fields are not sent by FormData - re-enable briefly so
+    // chassis_number still travels with the edit POST (backend re-checks
+    // it matches the URL and rejects any attempt to change it).
+    const chassisInput = document.getElementById('inventory-chassis-input');
+    const wasDisabled = chassisInput.disabled;
+    chassisInput.disabled = false;
+    const result = await novadriveSubmit(form, (r) => {
+      if (editing) {
+        updateExistingUnitRow(editedChassis, r.data);
+      } else {
+        addUnitToTable(r);
+      }
+    });
+    chassisInput.disabled = wasDisabled;
+    if (result && editing) {
+      cancelInventoryEdit();
+    } else if (result) {
+      form.reset();
+    }
+  }
+</script>
+{% endblock %}

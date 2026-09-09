@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}Orders - NovaDrive{% endblock %}
+{% block content %}
+  <h1>Orders</h1>
+  <p class="subtitle">Create an order (customer + inventory unit + agent), then approve, invoice or cancel it. Every action generates real outbox events.</p>
+
+  <div class="two-col">
+    <div class="col-form">
+      <div class="card">
+        <h2>New order</h2>
+        <form id="order-form" class="form-grid" method="post" action="/orders"
+              onsubmit="event.preventDefault(); submitOrderForm(this);">
+          <label>Fulfillment branch
+            <select name="fulfillment_branch" id="order-branch" required onchange="filterByBranch()">
+              <option value="" disabled selected>Select a branch…</option>
+              {% for b in branches %}
+              <option value="{{ b.branch_code }}">{{ b.display_name }} ({{ b.branch_code }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Customer
+            <select name="buyer_code" required>
+              <option value="" disabled selected>Select a customer…</option>
+              {% for c in customers %}
+              <option value="{{ c.customer_code }}">{{ c.full_name }} ({{ c.customer_code }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Sales agent
+            <select name="sales_agent_code" id="order-agent" required>
+              <option value="" disabled selected>Select a branch first…</option>
+              {% for a in agents %}
+              <option value="{{ a.agent_code }}" data-branch-code="{{ a.branch_code }}" hidden>{{ a.agent_display_name }} ({{ a.agent_code }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Inventory unit
+            <select name="chassis_number" id="order-unit" required onchange="fillUnitPrice()">
+              <option value="" disabled selected>Select a branch first…</option>
+              {% for u in units %}
+              <option value="{{ u.chassis_number }}" data-branch-code="{{ u.branch_code }}" data-list-amount="{{ u.list_amount }}" hidden>{{ u.brand_name }} {{ u.model_name }} — ${{ '%.2f'|format(u.list_amount) }} ({{ u.chassis_number }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Unit price (USD)
+            <input type="number" name="unit_gross_amount" id="order-unit-amount" min="0" step="0.01" placeholder="defaults to list price">
+          </label>
+          <label>Discount %
+            <input type="number" name="discount_pct" min="0" max="100" step="0.01" value="0">
+          </label>
+          <label>Tax amount (USD)
+            <input type="number" name="tax_amount" min="0" step="0.01" value="0">
+          </label>
+          <label>Currency
+            <input type="text" name="currency_code" value="USD" maxlength="3">
+          </label>
+          <label>Payment channel (optional)
+            <input type="text" name="payment_channel" maxlength="12" placeholder="e.g. CARD">
+          </label>
+          <label>Amount captured (optional)
+            <input type="number" name="captured_amount" min="0" step="0.01">
+          </label>
+          <div class="full-width">
+            <button type="submit" class="btn btn-primary">Create order</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card col-table">
+      <h2>Orders</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Order #</th><th>Buyer</th><th>Branch</th><th>Net amount</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="orders-table">
+            {% for o in orders %}
+            <tr id="order-{{ o.order_number }}" data-order-status="{{ o.order_status }}" data-invoice-reference="{{ o.invoice_reference or '' }}">
+              <td>{{ o.order_number }}</td>
+              <td>{{ o.buyer_code }}</td>
+              <td>{{ o.fulfillment_branch }}</td>
+              <td>${{ '%.2f'|format(o.net_amount) }} {{ o.currency_code }}</td>
+              <td><span class="badge">{{ o.order_status }}</span></td>
+              <td>
+                <button type="button" class="btn btn-outline btn-sm" onclick="toggleEditPanel('{{ o.order_number }}')">Edit</button>
+                <form method="post" action="/orders/{{ o.order_number }}/delete" style="display:inline"
+                      onsubmit="event.preventDefault(); novadriveSubmit(this, () => { document.getElementById('order-{{ o.order_number }}').remove(); const p = document.getElementById('panel-{{ o.order_number }}'); if (p) p.remove(); ordersPaginator.render(); });">
+                  <button type="submit" class="btn btn-outline btn-sm">Delete</button>
+                </form>
+              </td>
+            </tr>
+            <tr id="panel-{{ o.order_number }}" class="edit-panel-row" hidden>
+              <td colspan="6">
+                <form class="form-edit-inline" method="post" action="/orders/{{ o.order_number }}/edit"
+                      onsubmit="event.preventDefault(); submitOrderEdit(this, '{{ o.order_number }}');">
+                  <label>Status
+                    <select name="order_status">
+                      <option value="OPEN" {{ 'selected' if o.order_status == 'OPEN' else '' }}>Open</option>
+                      <option value="APPROVED" {{ 'selected' if o.order_status == 'APPROVED' else '' }}>Approved</option>
+                      <option value="INVOICED" {{ 'selected' if o.order_status == 'INVOICED' else '' }}>Invoiced</option>
+                      <option value="CANCELLED" {{ 'selected' if o.order_status == 'CANCELLED' else '' }}>Cancelled</option>
+                    </select>
+                  </label>
+                  <label>Invoice reference
+                    <input type="text" name="invoice_reference" value="{{ o.invoice_reference or '' }}" maxlength="35">
+                  </label>
+                  <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+                  <button type="button" class="btn btn-outline btn-sm" onclick="toggleEditPanel('{{ o.order_number }}')">Close</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div id="orders-pagination" class="pagination"></div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block page_script %}
+<script>
+  const ordersPaginator = createPaginator('orders-table', 'orders-pagination', 12);
+
+  // --- Filter Agent / Inventory dropdowns by the selected branch, client
+  // side (same pattern Andes used for Vendedor in the Venta form) - no
+  // extra network round trip per branch change. ---
+  function filterByBranch() {
+    const branch = document.getElementById('order-branch').value;
+    for (const [selectId, placeholder] of [['order-agent', 'Select an agent…'], ['order-unit', 'Select an inventory unit…']]) {
+      const select = document.getElementById(selectId);
+      let firstVisible = null;
+      for (const opt of select.options) {
+        if (!opt.dataset.branchCode) continue; // the placeholder option
+        const matches = opt.dataset.branchCode === branch;
+        opt.hidden = !matches;
+        if (matches && firstVisible === null) firstVisible = opt;
+      }
+      select.value = '';
+      select.options[0].textContent = branch ? placeholder : 'Select a branch first…';
+    }
+    document.getElementById('order-unit-amount').value = '';
+  }
+
+  function fillUnitPrice() {
+    const select = document.getElementById('order-unit');
+    const opt = select.options[select.selectedIndex];
+    const amountInput = document.getElementById('order-unit-amount');
+    if (opt && opt.dataset.listAmount && !amountInput.value) {
+      amountInput.value = opt.dataset.listAmount;
+    }
+  }
+
+  function orderRowHTML(o) {
+    return `
+      <td>${o.order_number}</td>
+      <td>${o.buyer_code}</td>
+      <td>${o.fulfillment_branch}</td>
+      <td>$${Number(o.net_amount).toFixed(2)} ${o.currency_code}</td>
+      <td><span class="badge">${o.order_status}</span></td>
+      <td>
+        <button type="button" class="btn btn-outline btn-sm" onclick="toggleEditPanel('${o.order_number}')">Edit</button>
+        <form method="post" action="/orders/${o.order_number}/delete" style="display:inline"
+              onsubmit="event.preventDefault(); novadriveSubmit(this, () => { document.getElementById('order-${o.order_number}').remove(); const p = document.getElementById('panel-${o.order_number}'); if (p) p.remove(); ordersPaginator.render(); });">
+          <button type="submit" class="btn btn-outline btn-sm">Delete</button>
+        </form>
+      </td>`;
+  }
+
+  function editPanelHTML(o) {
+    return `
+      <td colspan="6">
+        <form class="form-edit-inline" method="post" action="/orders/${o.order_number}/edit"
+              onsubmit="event.preventDefault(); submitOrderEdit(this, '${o.order_number}');">
+          <label>Status
+            <select name="order_status">
+              <option value="OPEN" ${o.order_status === 'OPEN' ? 'selected' : ''}>Open</option>
+              <option value="APPROVED" ${o.order_status === 'APPROVED' ? 'selected' : ''}>Approved</option>
+              <option value="INVOICED" ${o.order_status === 'INVOICED' ? 'selected' : ''}>Invoiced</option>
+              <option value="CANCELLED" ${o.order_status === 'CANCELLED' ? 'selected' : ''}>Cancelled</option>
+            </select>
+          </label>
+          <label>Invoice reference
+            <input type="text" name="invoice_reference" value="${o.invoice_reference || ''}" maxlength="35">
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="toggleEditPanel('${o.order_number}')">Close</button>
+        </form>
+      </td>`;
+  }
+
+  function addOrderToTable(response) {
+    if (!response || !response.data) return;
+    const o = response.data;
+    const tbody = document.getElementById('orders-table');
+    const row = document.createElement('tr');
+    row.id = `order-${o.order_number}`;
+    row.className = 'row-new';
+    row.dataset.orderStatus = o.order_status;
+    row.dataset.invoiceReference = o.invoice_reference || '';
+    row.innerHTML = orderRowHTML(o);
+    const panel = document.createElement('tr');
+    panel.id = `panel-${o.order_number}`;
+    panel.className = 'edit-panel-row';
+    panel.hidden = true;
+    panel.innerHTML = editPanelHTML(o);
+    tbody.prepend(panel);
+    tbody.prepend(row);
+    ordersPaginator.goToStart();
+  }
+
+  function toggleEditPanel(orderNumber) {
+    const panel = document.getElementById(`panel-${orderNumber}`);
+    if (panel) panel.hidden = !panel.hidden;
+  }
+
+  async function submitOrderForm(form) {
+    const result = await novadriveSubmit(form, (r) => addOrderToTable(r));
+    if (result) {
+      form.reset();
+      document.getElementById('order-agent').options[0].textContent = 'Select a branch first…';
+      document.getElementById('order-unit').options[0].textContent = 'Select a branch first…';
+    }
+  }
+
+  async function submitOrderEdit(form, orderNumber) {
+    await novadriveSubmit(form, (r) => {
+      if (!r || !r.data) return;
+      const row = document.getElementById(`order-${orderNumber}`);
+      if (row) {
+        row.dataset.orderStatus = r.data.order_status;
+        row.dataset.invoiceReference = r.data.invoice_reference || '';
+        row.innerHTML = orderRowHTML(r.data);
+        row.className = 'row-new';
+      }
+      const panel = document.getElementById(`panel-${orderNumber}`);
+      if (panel) {
+        panel.innerHTML = editPanelHTML(r.data);
+        panel.hidden = true;
+      }
+    });
+  }
+</script>
+{% endblock %}

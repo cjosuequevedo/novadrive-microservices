@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NovaDrive{% endblock %}</title>
+  <style>
+    :root {
+      /* Identidad propia de NovaDrive (decision de diseno: paleta distinta
+         a la de Andes -negro/gris- a proposito, para que a simple vista se
+         note que son dos sistemas distintos). Navy + teal, espiritu
+         profesional similar, identidad propia. */
+      --navy-950: #0b1424;
+      --navy-800: #13233d;
+      --teal-600: #0f9c93;
+      --teal-500: #14b8a6;
+      --teal-100: #d8f5f1;
+      --slate-700: #33415580;
+      --slate-700-solid: #334155;
+      --slate-500: #64748b;
+      --slate-300: #cbd5e1;
+      --slate-150: #e6ebf2;
+      --slate-50: #f7f9fc;
+      --white: #ffffff;
+      --danger-100: #fde2e1;
+      --danger-700: #9c2b26;
+      --radius: 8px;
+      --shadow: 0 1px 2px rgba(11,20,36,0.06), 0 4px 14px rgba(11,20,36,0.06);
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      background: var(--slate-50);
+      color: var(--navy-950);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* --- Top bar --- */
+    .topbar {
+      background: var(--navy-950);
+      color: var(--white);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.55rem 1.5rem;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .brand {
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: 0.04em;
+      color: var(--white);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal-500); display: inline-block; }
+    .brand span.tag { color: var(--slate-300); font-weight: 400; }
+    .nav { display: flex; gap: 0.25rem; }
+    .nav a {
+      color: var(--slate-300);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      padding: 0.5rem 0.9rem;
+      border-radius: var(--radius);
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav a:hover { background: rgba(255,255,255,0.08); color: var(--white); }
+    .nav a.active { background: var(--teal-500); color: var(--navy-950); }
+
+    /* --- Layout --- */
+    .page {
+      width: 96%;
+      max-width: 1680px;
+      margin: 0 auto;
+      padding: 0.7rem 0 0.85rem;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(360px, 520px) 1fr;
+      gap: 1.5rem;
+      align-items: start;
+    }
+    .col-form { display: flex; flex-direction: column; gap: 0.65rem; min-width: 0; }
+    .col-table { min-width: 0; }
+    @media (max-width: 960px) {
+      .two-col { grid-template-columns: 1fr; }
+    }
+    h1 { font-size: 1.2rem; margin: 0 0 0.1rem; letter-spacing: -0.01em; }
+    h2 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+    .subtitle { color: var(--slate-500); font-size: 0.83rem; margin: 0 0 0.55rem; }
+
+    /* --- Result banner --- */
+    #nd-banner { margin-bottom: 0.7rem; }
+    .banner {
+      border: 1px solid var(--teal-600);
+      border-radius: var(--radius);
+      padding: 0.75rem 1rem;
+      font-size: 0.88rem;
+      background: var(--teal-100);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+    .banner.error { border-color: var(--danger-700); background: var(--danger-100); color: var(--danger-700); }
+    .banner .close { cursor: pointer; color: inherit; opacity: 0.7; font-size: 0.8rem; border: none; background: none; }
+    .banner code { background: rgba(0,0,0,0.06); padding: 0.05rem 0.3rem; border-radius: 3px; }
+
+    /* --- Cards --- */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--slate-150);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 0.75rem 1rem;
+    }
+    .card h2 { border-bottom: 1px solid var(--slate-150); padding-bottom: 0.35rem; margin-bottom: 0.55rem; }
+
+    /* --- Forms --- */
+    form.form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem 0.75rem;
+      align-items: end;
+    }
+    form.form-grid .full-width { grid-column: 1 / -1; }
+    label { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.76rem; font-weight: 600; color: var(--slate-700-solid); min-width: 0; }
+    input, select {
+      font: inherit;
+      font-size: 0.86rem;
+      padding: 0.32rem 0.5rem;
+      border: 1px solid var(--slate-300);
+      border-radius: var(--radius);
+      background: var(--white);
+      color: var(--navy-950);
+      width: 100%;
+      min-width: 0;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--teal-600); box-shadow: 0 0 0 3px var(--teal-100); }
+
+    /* --- Buttons --- */
+    .btn {
+      font: inherit;
+      font-size: 0.88rem;
+      font-weight: 600;
+      padding: 0.55rem 1.1rem;
+      border-radius: var(--radius);
+      cursor: pointer;
+      border: 1px solid var(--navy-950);
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: var(--navy-950); color: var(--white); }
+    .btn-primary:hover:not(:disabled) { background: var(--teal-600); border-color: var(--teal-600); }
+    .btn-outline { background: var(--white); color: var(--navy-950); }
+    .btn-outline:hover:not(:disabled) { background: var(--slate-50); }
+    .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.78rem; }
+
+    /* --- Tables --- */
+    table { border-collapse: collapse; width: 100%; font-size: 0.87rem; }
+    thead th {
+      text-align: left;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--slate-500);
+      border-bottom: 1px solid var(--slate-300);
+      padding: 0.5rem 0.7rem;
+    }
+    tbody td { padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--slate-150); }
+    tbody tr:hover { background: var(--slate-50); }
+    tbody tr.row-new { animation: highlight 1.8s ease-out; }
+    @keyframes highlight { from { background: var(--teal-100); } to { background: transparent; } }
+
+    /* Wide tables (and any wide diagram/code block) scroll inside their
+       own container - never widen the page body (responsive rule). */
+    .table-scroll { overflow-x: auto; }
+
+    /* --- Pagination --- */
+    .pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.6rem;
+      padding-top: 0.55rem;
+      border-top: 1px solid var(--slate-150);
+      font-size: 0.8rem;
+      color: var(--slate-700-solid);
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .pagination .controls { display: flex; gap: 0.5rem; align-items: center; }
+
+    /* --- Expandable edit row (Order) --- */
+    tr.edit-panel-row td { background: var(--slate-50); padding: 0.9rem 0.7rem; }
+    .form-edit-inline { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
+    .form-edit-inline label { min-width: 140px; }
+    @media (max-width: 640px) {
+      .form-edit-inline { flex-direction: column; align-items: stretch; }
+      .form-edit-inline label { min-width: 0; width: 100%; }
+    }
+
+    /* --- Status badges --- */
+    .badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid var(--slate-300);
+      color: var(--slate-700-solid);
+    }
+
+    .muted { color: var(--slate-500); font-size: 0.85rem; }
+    .subtle-link { color: var(--slate-700-solid); font-size: 0.78rem; }
+
+    /* Responsive: below 480px, drop the form grid to a single column and
+       shrink padding, so a phone viewport never scrolls horizontally. */
+    @media (max-width: 480px) {
+      form.form-grid { grid-template-columns: 1fr; }
+      .page { width: 100%; padding: 0.5rem 0.6rem; }
+      .topbar { padding: 0.5rem 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <a class="brand" href="{{ nav.customers_url }}/customers"><span class="dot"></span>NOVA<span class="tag">DRIVE</span></a>
+    <nav class="nav">
+      <a href="{{ nav.customers_url }}/customers" class="{{ 'active' if active_nav == 'customers' else '' }}">Customers</a>
+      <a href="{{ nav.inventory_url }}/inventory" class="{{ 'active' if active_nav == 'inventory' else '' }}">Inventory</a>
+      <a href="{{ nav.orders_url }}/orders" class="{{ 'active' if active_nav == 'orders' else '' }}">Orders</a>
+    </nav>
+  </div>
+  <main class="page">
+    <div id="nd-banner"></div>
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    // Helpers shared by the three microservices' forms - every mutation
+    // still goes to the same real POST endpoints (same JSON contract,
+    // CLAUDE.md section 8); the only thing this changes is that the
+    // browser no longer navigates to a raw-JSON page on submit, it shows
+    // the result inline.
+
+    function showBanner(kind, html) {
+      const cont = document.getElementById('nd-banner');
+      cont.innerHTML = `
+        <div class="banner ${kind === 'error' ? 'error' : ''}">
+          <div>${html}</div>
+          <button class="close" onclick="this.closest('.banner').remove()">dismiss ✕</button>
+        </div>`;
+    }
+
+    // "detail" on an error response can be a plain string (ConflictError/
+    // NotFoundError, from the service layer) or a list of Pydantic 422
+    // validation errors (each with loc/msg) - render as "field: message"
+    // instead of dumping raw JSON.
+    function formatErrorDetail(detail) {
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) {
+        return detail
+          .map(e => {
+            if (e && typeof e === 'object' && 'msg' in e) {
+              const field = Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : (e.loc || '');
+              return field ? `${field}: ${e.msg}` : e.msg;
+            }
+            return JSON.stringify(e);
+          })
+          .join(' — ');
+      }
+      return JSON.stringify(detail);
+    }
+
+    function statusLink(eventId) {
+      return `<a class="subtle-link" href="/events/${eventId}/status" target="_blank">view status ↗</a>`;
+    }
+
+    const ND_TIMEOUT_MS = 12000; // never leave a submit hanging without feedback
+
+    async function novadriveSubmit(form, onSuccess) {
+      const btn = form.querySelector('button[type=submit]');
+      const originalText = btn ? btn.textContent : null;
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), ND_TIMEOUT_MS);
+
+      try {
+        let resp;
+        try {
+          resp = await fetch(form.action, { method: 'POST', body: new FormData(form), signal: controller.signal });
+        } catch (e) {
+          if (e.name === 'AbortError') {
+            showBanner('error', `<strong>The server took too long to respond (over ${ND_TIMEOUT_MS / 1000}s).</strong> We could not confirm whether the operation completed — check the table or try again.`);
+          } else {
+            showBanner('error', `<strong>Could not connect to the server.</strong> ${e.message || e}. Check your connection and try again.`);
+          }
+          return null;
+        }
+
+        let body = null;
+        try { body = await resp.json(); } catch (_) { /* no body, e.g. delete */ }
+
+        if (!resp.ok) {
+          const detail = body && body.detail ? formatErrorDetail(body.detail) : `HTTP ${resp.status}`;
+          showBanner('error', `<strong>The operation could not be completed.</strong> ${detail}`);
+          return null;
+        }
+
+        const events = (body && body.events) || [];
+        const eventList = events.map(e => `${e.entity} <code>${e.operation}</code> ${statusLink(e.event_id)}`).join(' &nbsp;·&nbsp; ');
+        showBanner('ok', `<strong>Done.</strong> correlation_id <code>${body ? body.correlation_id : ''}</code>${eventList ? ' — ' + eventList : ''}`);
+        if (onSuccess) onSuccess(body);
+        return body;
+      } finally {
+        clearTimeout(timeoutId);
+        if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      }
+    }
+
+    // Generic client-side paginator - the table already renders all its
+    // rows (the repository fetches up to a reasonable limit); this only
+    // controls which are visible, recalculated on every render() so
+    // inserting/removing rows via JS never breaks pagination.
+    function createPaginator(tbodyId, pagContainerId, rowsPerPage) {
+      let currentPage = 1;
+      function mainRows() {
+        return Array.from(document.getElementById(tbodyId).children)
+          .filter(r => r.tagName === 'TR' && !r.classList.contains('edit-panel-row'));
+      }
+      function render() {
+        const rows = mainRows();
+        const totalPages = Math.max(1, Math.ceil(rows.length / rowsPerPage));
+        if (currentPage > totalPages) currentPage = totalPages;
+        if (currentPage < 1) currentPage = 1;
+        rows.forEach((row, i) => {
+          const visible = Math.floor(i / rowsPerPage) + 1 === currentPage;
+          row.hidden = !visible;
+          const panelSibling = row.nextElementSibling;
+          if (panelSibling && panelSibling.classList.contains('edit-panel-row') && !visible) {
+            panelSibling.hidden = true;
+          }
+        });
+        const cont = document.getElementById(pagContainerId);
+        if (!cont) return;
+        cont.innerHTML = `
+          <span>Page ${currentPage} of ${totalPages} — ${rows.length} record(s)</span>
+          <span class="controls">
+            <button type="button" class="btn btn-outline btn-sm" ${currentPage <= 1 ? 'disabled' : ''}>‹ Previous</button>
+            <button type="button" class="btn btn-outline btn-sm" ${currentPage >= totalPages ? 'disabled' : ''}>Next ›</button>
+          </span>`;
+        const [prevBtn, nextBtn] = cont.querySelectorAll('button');
+        prevBtn.onclick = () => { if (currentPage > 1) { currentPage--; render(); } };
+        nextBtn.onclick = () => { currentPage++; render(); };
+      }
+      render();
+      return {
+        render,
+        goToStart() { currentPage = 1; render(); },
+      };
+    }
+  </script>
+  {% block page_script %}{% endblock %}
+</body>
+</html>

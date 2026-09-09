@@ -1,0 +1,140 @@
+# Despliegue completo de NovaDrive: Postgres + Redpanda propios + los
+# 5 procesos (3 microservicios + worker + bridge), todos desde la
+# misma imagen (ver Dockerfile / docker-entrypoint.sh).
+#
+# A diferencia del smoke test manual de esta sesion (que usaba
+# host.docker.internal, un nombre magico de Docker Desktop en Windows/
+# Mac), acá los contenedores se hablan entre si por nombre de servicio
+# dentro de la red interna de compose - portable a un VPS Linux real,
+# no solo a esta maquina de desarrollo.
+#
+# Redpanda con DOS listeners (ver CLAUDE.md, hallazgo real de esta
+# misma sesion - el listener unico funcionaba desde el host pero NO
+# desde otro contenedor, error de conexion real, no hipotetico):
+#   - INTERNAL (puerto 9092, sin publicar al host): para que
+#     customers/inventory/orders/worker/bridge se conecten por nombre
+#     de servicio "redpanda:9092".
+#   - EXTERNAL (puerto 9093 -> host 29092): para herramientas del host
+#     (scripts de verificacion, rpk, etc.), igual que en desarrollo.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - novadrive_postgres_data:/var/lib/postgresql/data
+      - ./db/ddl_postgres.sql:/docker-entrypoint-initdb.d/01_ddl_postgres.sql:ro
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9093
+      - --advertise-kafka-addr
+      - INTERNAL://redpanda:9092,EXTERNAL://127.0.0.1:29092
+    ports:
+      - "${REDPANDA_EXTERNAL_PORT:-29092}:9093"
+      - "${REDPANDA_ADMIN_PORT:-29644}:9644"
+    mem_limit: 1200m
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  customers:
+    build: .
+    command: ["customers"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: &app_env
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_SCHEMA: nd
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      SOURCE_SYSTEM: NOVADRIVE
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:-changeme}
+      CUSTOMERS_URL: http://localhost:8001
+      INVENTORY_URL: http://localhost:8002
+      ORDERS_URL: http://localhost:8003
+    ports:
+      - "${CUSTOMERS_PORT:-8001}:8001"
+    mem_limit: 256m
+
+  inventory:
+    build: .
+    command: ["inventory"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: *app_env
+    ports:
+      - "${INVENTORY_PORT:-8002}:8002"
+    mem_limit: 256m
+
+  orders:
+    build: .
+    command: ["orders"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: *app_env
+    ports:
+      - "${ORDERS_PORT:-8003}:8003"
+    mem_limit: 256m
+
+  worker:
+    build: .
+    command: ["worker"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment: *app_env
+    mem_limit: 256m
+    # Una sola replica en el MVP (seccion 2/13 del PDF) - no usar
+    # `deploy.replicas` > 1 aca.
+
+  bridge:
+    build: .
+    command: ["bridge"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    environment:
+      <<: *app_env
+      DATABRICKS_HOST: ${DATABRICKS_HOST}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN}
+      DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID:-548c86efc1164b8d}
+    mem_limit: 256m
+
+volumes:
+  novadrive_postgres_data:

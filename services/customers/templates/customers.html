@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Customers - NovaDrive{% endblock %}
+{% block content %}
+  <h1>Customers</h1>
+  <p class="subtitle">Create, edit and delete customers. Every action generates a real outbox event.</p>
+
+  <div class="two-col">
+    <div class="col-form">
+      <div class="card">
+        <h2 id="customer-form-title">New customer</h2>
+        <form id="customer-form" class="form-grid" method="post" action="/customers"
+              onsubmit="event.preventDefault(); submitCustomerForm(this);">
+          <label>Document number
+            <input type="text" name="document_number" required maxlength="25">
+          </label>
+          <label>Full name
+            <input type="text" name="full_name" required maxlength="180">
+          </label>
+          <label>Email
+            <input type="email" name="email_address" maxlength="180">
+          </label>
+          <label>Mobile phone
+            <input type="text" name="mobile_phone" maxlength="35">
+          </label>
+          <label class="full-width">Mailing address
+            <input type="text" name="mailing_address" maxlength="240">
+          </label>
+          <label>Birth date
+            <input type="date" name="birth_date">
+          </label>
+          <label>Status
+            <select name="customer_status">
+              <option value="A">Active</option>
+              <option value="S">Suspended</option>
+              <option value="X">Closed</option>
+            </select>
+          </label>
+          <div class="full-width" style="display:flex; gap:0.5rem;">
+            <button type="submit" class="btn btn-primary" id="customer-form-submit">Create customer</button>
+            <button type="button" class="btn btn-outline" id="customer-form-cancel" onclick="cancelCustomerEdit()" hidden>Cancel edit</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card col-table">
+      <h2>Registered customers</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Code</th><th>Document</th><th>Full name</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="customers-table">
+            {% for c in customers %}
+            <tr id="customer-{{ c.customer_code }}"
+                data-document-number="{{ c.document_number }}" data-full-name="{{ c.full_name }}"
+                data-email-address="{{ c.email_address or '' }}" data-mobile-phone="{{ c.mobile_phone or '' }}"
+                data-mailing-address="{{ c.mailing_address or '' }}"
+                data-birth-date="{{ c.birth_date or '' }}" data-customer-status="{{ c.customer_status }}">
+              <td>{{ c.customer_code }}</td>
+              <td>{{ c.document_number }}</td>
+              <td>{{ c.full_name }}</td>
+              <td><span class="badge">{{ c.customer_status }}</span></td>
+              <td>
+                <button type="button" class="btn btn-outline btn-sm" onclick="loadCustomerForEdit(document.getElementById('customer-{{ c.customer_code }}'))">Edit</button>
+                <form method="post" action="/customers/{{ c.customer_code }}/delete" style="display:inline"
+                      onsubmit="event.preventDefault(); novadriveSubmit(this, () => { this.closest('tr').remove(); customersPaginator.render(); });">
+                  <button type="submit" class="btn btn-outline btn-sm">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div id="customers-pagination" class="pagination"></div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block page_script %}
+<script>
+  const customersPaginator = createPaginator('customers-table', 'customers-pagination', 12);
+
+  function customerRowHTML(c) {
+    return `
+      <td>${c.customer_code}</td>
+      <td>${c.document_number}</td>
+      <td>${c.full_name}</td>
+      <td><span class="badge">${c.customer_status}</span></td>
+      <td>
+        <button type="button" class="btn btn-outline btn-sm" onclick="loadCustomerForEdit(document.getElementById('customer-${c.customer_code}'))">Edit</button>
+        <form method="post" action="/customers/${c.customer_code}/delete" style="display:inline"
+              onsubmit="event.preventDefault(); novadriveSubmit(this, () => { this.closest('tr').remove(); customersPaginator.render(); });">
+          <button type="submit" class="btn btn-outline btn-sm">Delete</button>
+        </form>
+      </td>`;
+  }
+
+  function addCustomerToTable(response) {
+    if (!response || !response.data) return;
+    const c = response.data;
+    const tbody = document.getElementById('customers-table');
+    const row = document.createElement('tr');
+    row.id = `customer-${c.customer_code}`;
+    row.className = 'row-new';
+    row.dataset.documentNumber = c.document_number;
+    row.dataset.fullName = c.full_name;
+    row.dataset.emailAddress = c.email_address || '';
+    row.dataset.mobilePhone = c.mobile_phone || '';
+    row.dataset.mailingAddress = c.mailing_address || '';
+    row.dataset.birthDate = c.birth_date || '';
+    row.dataset.customerStatus = c.customer_status;
+    row.innerHTML = customerRowHTML(c);
+    tbody.prepend(row);
+    customersPaginator.goToStart();
+  }
+
+  function updateExistingCustomerRow(code, c) {
+    const row = document.getElementById(`customer-${code}`);
+    if (!row || !c) return;
+    row.dataset.documentNumber = c.document_number;
+    row.dataset.fullName = c.full_name;
+    row.dataset.emailAddress = c.email_address || '';
+    row.dataset.mobilePhone = c.mobile_phone || '';
+    row.dataset.mailingAddress = c.mailing_address || '';
+    row.dataset.birthDate = c.birth_date || '';
+    row.dataset.customerStatus = c.customer_status;
+    row.className = 'row-new';
+    row.innerHTML = customerRowHTML(c);
+  }
+
+  // --- Edit with prefill ---
+  function loadCustomerForEdit(row) {
+    const form = document.getElementById('customer-form');
+    const code = row.id.replace('customer-', '');
+    form.action = `/customers/${code}/edit`;
+    form.dataset.mode = 'edit';
+    form.dataset.editingCode = code;
+    form.querySelector('[name=document_number]').value = row.dataset.documentNumber;
+    form.querySelector('[name=full_name]').value = row.dataset.fullName;
+    form.querySelector('[name=email_address]').value = row.dataset.emailAddress;
+    form.querySelector('[name=mobile_phone]').value = row.dataset.mobilePhone;
+    form.querySelector('[name=mailing_address]').value = row.dataset.mailingAddress;
+    form.querySelector('[name=birth_date]').value = row.dataset.birthDate;
+    form.querySelector('[name=customer_status]').value = row.dataset.customerStatus;
+    document.getElementById('customer-form-title').textContent = `Edit customer ${code}`;
+    document.getElementById('customer-form-submit').textContent = 'Save changes';
+    document.getElementById('customer-form-cancel').hidden = false;
+    form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function cancelCustomerEdit() {
+    const form = document.getElementById('customer-form');
+    form.action = '/customers';
+    delete form.dataset.mode;
+    delete form.dataset.editingCode;
+    form.reset();
+    document.getElementById('customer-form-title').textContent = 'New customer';
+    document.getElementById('customer-form-submit').textContent = 'Create customer';
+    document.getElementById('customer-form-cancel').hidden = true;
+  }
+
+  async function submitCustomerForm(form) {
+    const editing = form.dataset.mode === 'edit';
+    const editedCode = form.dataset.editingCode;
+    const result = await novadriveSubmit(form, (r) => {
+      if (editing) {
+        updateExistingCustomerRow(editedCode, r.data);
+      } else {
+        addCustomerToTable(r);
+      }
+    });
+    if (result && editing) {
+      cancelCustomerEdit();
+    } else if (result) {
+      form.reset();
+    }
+  }
+</script>
+{% endblock %}

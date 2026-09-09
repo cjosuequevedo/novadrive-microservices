@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: novadrive-postgres-dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Puerto host 15432, no 5432: esta maquina ya tiene un Postgres nativo
+      # de Windows (proceso postgres.exe) escuchando en 5432, y "ganaba" las
+      # conexiones a 127.0.0.1:5432 en vez del contenedor (ver CLAUDE.md,
+      # hallazgo de Fase 1 ORM) - confirmado con
+      # `Get-NetTCPConnection -LocalPort 5432` + `Get-Process`.
+      - "15432:5432"
+    volumes:
+      - novadrive_postgres_data:/var/lib/postgresql/data
+      - ./db/ddl_postgres.sql:/docker-entrypoint-initdb.d/01_ddl_postgres.sql:ro
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  novadrive_postgres_data:
