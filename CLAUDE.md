@@ -10,7 +10,7 @@ Este documento es la única fuente de verdad de las decisiones tomadas hasta aho
 
 ## Alcance recortado (confirmado 9 sep 2026 con quien encargó el proyecto y el líder de equipo)
 
-> **⚠️ AMPLIACIÓN PARCIAL DE ALCANCE (10 sep 2026) — leer antes de asumir que "NO es responsabilidad de este proyecto" sigue vigente tal cual.** CJ confirmó explícitamente que Silver y Quarantine para NovaDrive (NO Gold, sigue fuera) ahora SÍ son necesarios, para el trabajo del compañero encargado de la arquitectura medallón — que ejecuta todo manualmente, igual que con Bronze. Esta sesión señaló la contradicción con el acuerdo original (documentado abajo) antes de proceder, y CJ confirmó que es una decisión consciente. **No verificado que el líder de equipo original (co-firmante del recorte del 9 sep) esté al tanto de este cambio puntual** — si una sesión futura necesita ese contexto, preguntarlo explícitamente, no asumir que el acuerdo original completo sigue intacto. Ver Fase 17 para el detalle técnico completo (qué se construyó, qué no se tocó en el workspace real).
+> **⚠️ AMPLIACIÓN DE ALCANCE — YA CUBRE TODA LA ARQUITECTURA MEDALLÓN (10 sep 2026) — leer antes de asumir que "NO es responsabilidad de este proyecto" sigue vigente tal cual.** CJ confirmó explícitamente que Silver y Quarantine para NovaDrive ahora SÍ son necesarios (ver Fase 17), para el trabajo del compañero encargado de la arquitectura medallón — que ejecuta todo manualmente, igual que con Bronze. **Actualización del mismo día**: CJ avisó que **Gold también se va a pedir** ("quita esa restricción y esperá mis próximas indicaciones") — todavía sin especificar el detalle (qué vistas/tablas, con qué criterio de agregación). Esta sesión señaló la contradicción con el acuerdo original antes de proceder con Silver, y CJ confirmó que es una decisión consciente; el aviso de Gold llegó después, sin objeción de esta sesión (mismo criterio ya establecido, no hacía falta repetir la pregunta). **No verificado que el líder de equipo original (co-firmante del recorte del 9 sep) esté al tanto de este cambio de alcance** — si una sesión futura necesita ese contexto, preguntarlo explícitamente, no asumir que el acuerdo original completo sigue intacto. Ver Fase 17 para Silver (ya construido, entregable sin ejecutar); Gold queda pendiente de indicaciones concretas de CJ, sin ningún trabajo empezado todavía.
 
 Esto **anula** lo que la sección 2 del PDF (tabla "Resultado obligatorio") sugiere como entregable completo de NovaDrive — con la salvedad de Silver/Quarantine señalada arriba.
 
@@ -21,7 +21,7 @@ Esto **anula** lo que la sección 2 del PDF (tabla "Resultado obligatorio") sugi
 - Bridge subiendo esos eventos **crudos** a Databricks **Bronze** (append-only). Ahí termina el trabajo con Databricks.
 
 **NO es responsabilidad de este proyecto** (no construirlo aunque el PDF lo liste como parte del entregable de la sección 2/14):
-- Silver, Gold ni Quarantine para NovaDrive.
+- ~~Silver, Gold ni Quarantine para NovaDrive.~~ **Ya no vigente — ver la nota de ampliación de alcance justo arriba de este encabezado.** Silver/Quarantine ya se construyeron (Fase 17); Gold fue anunciado el mismo día como pendiente, sin indicaciones concretas todavía.
 - Homologación entre esquemas Andes/NovaDrive (mapeos de las secciones 15-17 del PDF).
 - Dashboards Lakeview ni vistas de negocio derivadas.
 - Cualquier decisión de cómo los analistas consumen o transforman lo que llega a Bronze.
