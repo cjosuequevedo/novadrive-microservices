@@ -40,6 +40,27 @@ MAX_CONSECUTIVE_FAILURES/MAX_BUFFER_SIZE con backpressure. Andes no
 tiene estas dos protecciones en su propio bridge; no hay pedido de
 quitarlas aca, y quitarlas reintroduciria un problema real ya
 resuelto.
+
+SPLIT DE VOLUME POR TIPO DE EVENTO (Fase 15, 10 sep 2026) - mismo
+patron replicado de Andes: en vez de un solo Volume generico con todos
+los tipos mezclados, cada batch se agrupa por el campo "entity" del
+propio payload (customer/vehicle/sale, mismo valor que ya viaja en el
+contrato de eventos compartido) y cada grupo sube como su propio
+archivo .jsonl a `raw_events_<entity>`. Un mensaje con entity
+desconocida, faltante, o un payload que ni siquiera es JSON valido cae
+al Volume generico original (`raw_events`, sin sufijo) - nunca se
+descarta en silencio, ver group_by_volume(). Un batch con mezcla de
+tipos (ej. una orden que genera `sale c` + `vehicle u` en el mismo
+ciclo) produce mas de un archivo por flush - es normal, ya paso en la
+prueba real de Andes.
+
+A diferencia de la implementacion de Andes, ESTE bridge no necesita un
+try/except extra alrededor de cada subida individual por grupo: si
+una subida falla (ej. el Volume no existiera), la excepcion se
+propaga hasta el try/except de loop_continuous() de mas abajo, que YA
+maneja esto (umbral de reintentos, backpressure, CRITICAL) - Andes no
+tiene ese mecanismo en su propio bridge, asi que ahi si hace falta un
+try/except puntual por subida; aca seria protection duplicada.
 """
 
 import json
@@ -63,6 +84,11 @@ SCHEMA = "bronze"
 VOLUME = "raw_events"
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
 TOPICS = ["cdc.novadrive.customer", "cdc.novadrive.vehicle", "cdc.novadrive.sale"]
+
+# Entidades conocidas del contrato de eventos (seccion 11) - cualquier
+# otro valor de "entity" (o su ausencia, o un payload no parseable)
+# cae al Volume generico VOLUME sin sufijo. Ver group_by_volume().
+KNOWN_ENTITIES = {"customer", "vehicle", "sale"}
 
 # Mismo hallazgo que Andes documenta en su propio bridge: leer siempre
 # KAFKA_BOOTSTRAP_SERVERS del entorno, nunca un default hardcoded que
@@ -124,45 +150,81 @@ def drain_topics(bootstrap_servers: str = BOOTSTRAP_SERVERS_DEFAULT, idle_timeou
     return messages
 
 
-def upload_batch(messages: list[dict]) -> str | None:
-    """Sube TODO el batch como UN SOLO archivo .jsonl al Volume (mismo
-    patron que `subir_batch()` en Andes) - ya no hace INSERT SQL, ver
-    docstring del modulo. Devuelve el nombre del archivo subido, o None
-    si no habia nada que subir.
+def _entity_for(message: dict) -> str | None:
+    """Devuelve el "entity" real del payload del mensaje, o None si no
+    se pudo determinar - payload que no es JSON valido, sin campo
+    "entity", o con un valor fuera de KNOWN_ENTITIES. None es la señal
+    para group_by_volume() de que este mensaje va al Volume generico."""
+    try:
+        payload = json.loads(message["payload"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    entity = payload.get("entity") if isinstance(payload, dict) else None
+    return entity if entity in KNOWN_ENTITIES else None
+
+
+def group_by_volume(messages: list[dict]) -> dict[str, list[dict]]:
+    """Agrupa mensajes por Volume destino - `{VOLUME}_<entity>` para
+    entities conocidas, o `VOLUME` (generico, sin sufijo) para
+    cualquier otro caso (entity desconocida/faltante, payload
+    corrupto). Ningun mensaje se pierde ni se descarta en silencio -
+    siempre cae en algun grupo. Pura funcion en memoria, sin red, para
+    poder probarla aislada (ver tests/test_bridge_grouping.py)."""
+    groups: dict[str, list[dict]] = {}
+    for m in messages:
+        entity = _entity_for(m)
+        volume_name = f"{VOLUME}_{entity}" if entity else VOLUME
+        groups.setdefault(volume_name, []).append(m)
+    return groups
+
+
+def upload_batch(messages: list[dict]) -> list[str]:
+    """Sube el batch AGRUPADO POR TIPO DE EVENTO (ver group_by_volume) -
+    un archivo .jsonl por grupo, mismo patron que Andes. Devuelve la
+    lista de rutas completas subidas (puede ser mas de una por ciclo si
+    el batch tenia mezcla de tipos - normal, ver docstring del modulo).
 
     Convencion de nombre: `novadrive_batch_<YYYYMMDD>_<HHMMSS>_<microsegundos>.jsonl`
     - mismo formato que Andes (`batch_...`), prefijo `novadrive_` para
       poder distinguir el origen si algun dia ambos Volumes se miran
-      juntos."""
+      juntos. Un nombre nuevo por archivo (no reusado entre grupos),
+      generado con datetime.now() en el momento de subir ese grupo."""
     if not messages:
-        return None
+        return []
 
-    filename = f"novadrive_batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
-    lines = []
-    for m in messages:
-        record = {
-            "kafka_topic": m["kafka_topic"],
-            "kafka_partition": m["kafka_partition"],
-            "kafka_offset": m["kafka_offset"],
-            "kafka_timestamp": m["kafka_timestamp"].isoformat(),
-            "ingested_at": m["ingested_at"].isoformat(),
-            "payload": m["payload"],
-            "source_file": filename,
-        }
-        lines.append(json.dumps(record, ensure_ascii=False))
-    content = "\n".join(lines).encode("utf-8")
+    uploaded: list[str] = []
+    for volume_name, group in group_by_volume(messages).items():
+        filename = f"novadrive_batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
+        lines = []
+        for m in group:
+            record = {
+                "kafka_topic": m["kafka_topic"],
+                "kafka_partition": m["kafka_partition"],
+                "kafka_offset": m["kafka_offset"],
+                "kafka_timestamp": m["kafka_timestamp"].isoformat(),
+                "ingested_at": m["ingested_at"].isoformat(),
+                "payload": m["payload"],
+                "source_file": filename,
+            }
+            lines.append(json.dumps(record, ensure_ascii=False))
+        content = "\n".join(lines).encode("utf-8")
 
-    upload_file(f"{VOLUME_PATH}/{filename}", content)
-    return filename
+        volume_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}"
+        upload_file(f"{volume_path}/{filename}", content)
+        uploaded.append(f"{volume_path}/{filename}")
+
+    return uploaded
 
 
 def main() -> None:
     print("[BRIDGE] Draining NovaDrive Redpanda topics (cdc.novadrive.customer/vehicle/sale)...")
     messages = drain_topics()
     print(f"[BRIDGE] {len(messages)} messages read from Redpanda.")
-    filename = upload_batch(messages)
-    if filename:
-        print(f"[BRIDGE] Uploaded to {VOLUME_PATH}/{filename} ({len(messages)} events).")
+    uploaded = upload_batch(messages)
+    if uploaded:
+        print(f"[BRIDGE] Uploaded {len(messages)} events across {len(uploaded)} file(s):")
+        for path in uploaded:
+            print(f"  - {path}")
     else:
         print("[BRIDGE] Nothing to upload (no pending messages).")
 
@@ -246,8 +308,8 @@ def loop_continuous(
             )
             if should_flush:
                 try:
-                    filename = upload_batch(buffer)
-                    logger.info("Uploaded %s to %s/%s", len(buffer), VOLUME_PATH, filename)
+                    uploaded = upload_batch(buffer)
+                    logger.info("Uploaded %s events across %s file(s): %s", len(buffer), len(uploaded), uploaded)
                 except Exception as exc:
                     consecutive_failures += 1
                     logger.exception(
