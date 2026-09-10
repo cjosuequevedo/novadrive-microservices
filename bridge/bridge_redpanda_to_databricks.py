@@ -1,22 +1,26 @@
 """
 bridge_redpanda_to_databricks.py - Puente Redpanda (propio de NovaDrive)
--> `novadrive_catalog.bronze.events` (Databricks). Consume los 3
-topicos de NovaDrive, enriquece con metadatos Kafka reales
-(topic/partition/offset/timestamp) y hace INSERT directo, en lote, via
-la Statement Execution API - SIN pasar por un Volume + Auto Loader
-como hace Andes.
+-> Volume de Unity Catalog `novadrive_catalog.bronze.raw_events`
+(Databricks). Consume los 3 topicos de NovaDrive, enriquece con
+metadatos Kafka reales (topic/partition/offset/timestamp) y sube cada
+batch como UN SOLO ARCHIVO .jsonl via la Files API - EXACTAMENTE el
+mismo patron que usa Andes en su propio bridge
+(`andes-motors/scripts/bridge_redpanda_to_databricks.py::subir_batch()`).
 
-Decision de diseno (marcada, no asumida en silencio - ver CLAUDE.md):
-Andes sube JSONL a un Volume y usa Auto Loader (`01_bronze_autoloader.py`,
-`availableNow`) porque su Silver depende de las garantias de
-checkpointing/exactly-once de Auto Loader sobre archivos. NovaDrive NO
-tiene Silver (fuera de alcance, ver `## Alcance recortado`) y el PDF
-permite duplicados en Bronze en reintento ("Bronze en si es
-append-only y puede... tener duplicados"), asi que un INSERT directo
-por lote desde un proceso Python continuo cumple igual la regla "no
-lanzar un Job de Databricks por cada POST; mantener un consumidor
-continuo" (el "consumidor continuo" aca es este mismo proceso Python,
-no un Job de Databricks) - con muchisima menos infraestructura.
+CAMBIO DE ARQUITECTURA (9 sep 2026) - revierte la decision original de
+este archivo: hasta hoy este bridge hacia INSERT SQL directo a una
+tabla `novadrive_catalog.bronze.events`, decision tomada a proposito
+porque NovaDrive no tiene Silver y no necesitaba las garantias de
+Auto Loader que Andes si necesita. Esa razon tecnica seguia siendo
+valida, pero el equipo de trabajo pidio explicitamente (requisito no
+negociable) que ambos sistemas hermanos suban los datos crudos de la
+MISMA manera para consistencia entre proyectos - confirmado por CJ
+tras señalarle la contradiccion con la decision anterior, no aplicado
+en silencio. La tabla SQL vieja (`bronze.events`) se elimino: ya no
+existe ninguna tabla Delta en este punto del pipeline, solo el Volume
+con archivos crudos - convertir esos archivos en tabla (Auto Loader)
+es un paso posterior y separado, fuera de alcance salvo que se pida
+explicitamente (igual criterio que en Andes).
 
 Dos modos, mismo espiritu que Andes:
 - drain_topics()/upload_batch(): una sola pasada (pruebas puntuales,
@@ -25,8 +29,20 @@ Dos modos, mismo espiritu que Andes:
   worker/outbox_worker.py) - poll continuo, batch por tiempo/tamano,
   nunca termina. Es el que debe correr en paralelo al worker outbox
   para que el flujo no se corte en este punto.
+
+Lo que SI se conserva de la version anterior, a proposito - no es
+parte de lo que Andes pidio igualar, son mejoras de confiabilidad
+propias de NovaDrive, ortogonales a "SQL vs archivos" (ver hallazgos
+tecnicos #11/#12 en CLAUDE.md): `enable.auto.commit=False` + commit
+manual solo tras una subida exitosa (evita perder eventos si el
+proceso termina a mitad de camino), y el umbral de
+MAX_CONSECUTIVE_FAILURES/MAX_BUFFER_SIZE con backpressure. Andes no
+tiene estas dos protecciones en su propio bridge; no hay pedido de
+quitarlas aca, y quitarlas reintroduciria un problema real ya
+resuelto.
 """
 
+import json
 import logging
 import os
 import time
@@ -35,14 +51,17 @@ from datetime import datetime, timezone
 from confluent_kafka import Consumer
 
 from bridge._env import load_dotenv_if_missing
-from bridge.databricks_sql import run_sql
+from bridge.databricks_files import upload_file
 
 load_dotenv_if_missing()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("novadrive.bridge")
 
-BRONZE_TABLE = "novadrive_catalog.bronze.events"
+CATALOG = "novadrive_catalog"
+SCHEMA = "bronze"
+VOLUME = "raw_events"
+VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
 TOPICS = ["cdc.novadrive.customer", "cdc.novadrive.vehicle", "cdc.novadrive.sale"]
 
 # Mismo hallazgo que Andes documenta en su propio bridge: leer siempre
@@ -65,18 +84,6 @@ BOOTSTRAP_SERVERS_DEFAULT = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1
 #     mensajes no leidos quedan intactos en Redpanda, no se pierden.
 MAX_CONSECUTIVE_FAILURES = int(os.environ.get("BRIDGE_MAX_CONSECUTIVE_FAILURES", "8"))
 MAX_BUFFER_SIZE = int(os.environ.get("BRIDGE_MAX_BUFFER_SIZE", "2000"))
-
-
-def _sql_str(value: str) -> str:
-    """Escapa un literal STRING para Spark SQL (ANSI: comilla simple
-    duplicada). El payload es JSON compacto de una sola linea (ver
-    common/events/serialization.py), asi que no hay saltos de linea que
-    manejar."""
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _sql_timestamp(dt: datetime) -> str:
-    return "TIMESTAMP" + _sql_str(dt.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
 
 def drain_topics(bootstrap_servers: str = BOOTSTRAP_SERVERS_DEFAULT, idle_timeout_sec: float = 3.0) -> list[dict]:
@@ -117,46 +124,47 @@ def drain_topics(bootstrap_servers: str = BOOTSTRAP_SERVERS_DEFAULT, idle_timeou
     return messages
 
 
-def upload_batch(messages: list[dict], batch_size: int = 50) -> int:
-    """INSERT directo a Bronze, en lotes de `batch_size` filas por
-    statement (limite prudente, no un limite documentado de la API).
-    Devuelve la cantidad de filas insertadas."""
+def upload_batch(messages: list[dict]) -> str | None:
+    """Sube TODO el batch como UN SOLO archivo .jsonl al Volume (mismo
+    patron que `subir_batch()` en Andes) - ya no hace INSERT SQL, ver
+    docstring del modulo. Devuelve el nombre del archivo subido, o None
+    si no habia nada que subir.
+
+    Convencion de nombre: `novadrive_batch_<YYYYMMDD>_<HHMMSS>_<microsegundos>.jsonl`
+    - mismo formato que Andes (`batch_...`), prefijo `novadrive_` para
+      poder distinguir el origen si algun dia ambos Volumes se miran
+      juntos."""
     if not messages:
-        return 0
+        return None
 
-    inserted = 0
-    for i in range(0, len(messages), batch_size):
-        chunk = messages[i : i + batch_size]
-        values_sql = ",\n".join(
-            "({}, {}, {}, {}, {}, {}, NULL)".format(
-                _sql_str(m["kafka_topic"]),
-                m["kafka_partition"],
-                m["kafka_offset"],
-                _sql_timestamp(m["kafka_timestamp"]),
-                _sql_timestamp(m["ingested_at"]),
-                _sql_str(m["payload"]),
-            )
-            for m in chunk
-        )
-        stmt = (
-            f"INSERT INTO {BRONZE_TABLE} "
-            "(kafka_topic, kafka_partition, kafka_offset, kafka_timestamp, ingested_at, payload, source_file)\n"
-            f"VALUES\n{values_sql}"
-        )
-        result = run_sql(stmt)
-        if result["status"]["state"] != "SUCCEEDED":
-            raise RuntimeError(f"Bronze insert failed: {result['status'].get('error')}")
-        inserted += len(chunk)
+    filename = f"novadrive_batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
+    lines = []
+    for m in messages:
+        record = {
+            "kafka_topic": m["kafka_topic"],
+            "kafka_partition": m["kafka_partition"],
+            "kafka_offset": m["kafka_offset"],
+            "kafka_timestamp": m["kafka_timestamp"].isoformat(),
+            "ingested_at": m["ingested_at"].isoformat(),
+            "payload": m["payload"],
+            "source_file": filename,
+        }
+        lines.append(json.dumps(record, ensure_ascii=False))
+    content = "\n".join(lines).encode("utf-8")
 
-    return inserted
+    upload_file(f"{VOLUME_PATH}/{filename}", content)
+    return filename
 
 
 def main() -> None:
     print("[BRIDGE] Draining NovaDrive Redpanda topics (cdc.novadrive.customer/vehicle/sale)...")
     messages = drain_topics()
     print(f"[BRIDGE] {len(messages)} messages read from Redpanda.")
-    inserted = upload_batch(messages)
-    print(f"[BRIDGE] {inserted} rows inserted into {BRONZE_TABLE}.")
+    filename = upload_batch(messages)
+    if filename:
+        print(f"[BRIDGE] Uploaded to {VOLUME_PATH}/{filename} ({len(messages)} events).")
+    else:
+        print("[BRIDGE] Nothing to upload (no pending messages).")
 
 
 def loop_continuous(
@@ -199,7 +207,7 @@ def loop_continuous(
     consumer.subscribe(TOPICS)
     logger.info(
         "NovaDrive bridge started (continuous loop). topics=%s -> %s max_consecutive_failures=%s max_buffer_size=%s",
-        TOPICS, BRONZE_TABLE, MAX_CONSECUTIVE_FAILURES, MAX_BUFFER_SIZE,
+        TOPICS, VOLUME_PATH, MAX_CONSECUTIVE_FAILURES, MAX_BUFFER_SIZE,
     )
 
     buffer: list[dict] = []
@@ -238,8 +246,8 @@ def loop_continuous(
             )
             if should_flush:
                 try:
-                    n = upload_batch(buffer)
-                    logger.info("Flushed %s events to %s", n, BRONZE_TABLE)
+                    filename = upload_batch(buffer)
+                    logger.info("Uploaded %s to %s/%s", len(buffer), VOLUME_PATH, filename)
                 except Exception as exc:
                     consecutive_failures += 1
                     logger.exception(
